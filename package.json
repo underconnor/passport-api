@@ -1,0 +1,44 @@
+{
+  "name": "@underconnor/passport-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Passport authentication and Minecraft access API",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "node --env-file=.env --watch dist/main.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed:development": "node dist/seed-development.js",
+    "test": "node --test test/unit.test.cjs",
+    "test:integration": "node --test --test-concurrency=1 test/integration.test.cjs",
+    "check": "npm run build && npm test",
+    "sheets:check": "node dist/sheets-check.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.1.2",
+    "@nestjs/core": "12.1.2",
+    "@nestjs/platform-express": "12.1.2",
+    "@prisma/client": "6.19.3",
+    "cookie": "1.0.2",
+    "google-auth-library": "11.1.0",
+    "helmet": "8.1.0",
+    "prisma": "6.19.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.10.1",
+    "supertest": "7.2.2",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.0"
+  }
+}

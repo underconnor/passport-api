@@ -1,33 +1,56 @@
 # Passport API
 
-Passport의 학교 로그인·회원 확인·Minecraft 연결·서버 접근 정책을 관리하는 백엔드입니다.
+학교 신원, 회원 명단, Minecraft 계정 연결과 서버 접근 정책을 관리하는 독립 백엔드입니다. Node.js 24, NestJS 12, PostgreSQL 17, Prisma 6을 사용합니다.
 
-**현재는 개발 준비 단계입니다.** 구현 계획과 소스 경계를 준비했으며 실행 API·DB migration·Docker image는 아직 없습니다.
+## 현재 구현
 
-## 책임
+- PostgreSQL에 저장하는 브라우저 세션, 로그인 시 세션 회전, host/port별 audience, 사용자·관리자 쿠키 분리, HttpOnly·SameSite와 Origin/CSRF 검증
+- 서비스 Bearer 인증, 5분 단회 연결 URL, 웹·게임 양쪽 확인, 접속 세션 일치, 원자적 연결·취소·재사용 차단
+- UUID별 단조 증가 정책 버전, 최대 60초 lease, 회원·명부 유효기간 만료 시 차단, 변경 outbox 기록
+- 자기신고 Discord ID 입력·수정·삭제. 양의 uint64 문자열만 받으며 소유권 확인이나 권한 증거로 사용하지 않음
+- 명시적으로 켜는 합성 개발 회원·비회원. `NODE_ENV=production`에서는 개발 인증 시작 자체를 거부
+- Google Sheets 읽기 전용 어댑터, 필수 열·중복·범위 검사, HMAC 학번 매칭 키와 검증 전용 CLI
+- 만료 세션 정리와 단일 인스턴스용 요청 제한
 
-- 학교 로그인 응답을 검증하고 사용자/관리자 웹에 각각 서버 세션을 발급합니다.
-- Google Sheets를 읽기 전용으로 동기화해 검증된 학번과 회원 자격을 대조합니다.
-- 웹 확인과 정품 Minecraft 접속 세션의 확인을 모두 거쳐 계정을 연결합니다.
-- Discord 숫자 사용자 ID를 문자열로 입력받고 `self_reported`로 저장합니다. 소유 확인·로그인·역할 부여에 사용하지 않습니다.
-- 서버별 scope·정지·기간제 허가·prefix 정보를 계산하고 짧은 정책 lease를 제공합니다.
-- 관리 RBAC·추가 인증·감사와 계정 복구를 제공합니다.
-- worker 프로세스는 명부 동기화·만료·outbox 재시도를 처리합니다.
+**실제 학교 인증과 실제 명부 동기화는 아직 연결하지 않았습니다.** 학교 인증 경로는 503으로 닫혀 있고, Sheets CLI는 DB를 변경하지 않습니다. 관리자 권한 등록·MFA·실제 관리 API도 활성화하지 않았습니다. SSE 전송은 아직 없으며 게임 서버는 정책 polling을 사용합니다. 개발 데이터를 학교 인증 결과로 취급해서는 안 됩니다.
 
-## 예정 스택
+## 로컬 실행
 
-Node.js 24 LTS, NestJS, PostgreSQL 17, Prisma. API와 worker는 같은 저장소에서 각각 실행합니다. 초기 학교 파서는 내부 HTTP/HTML 어댑터이며 추가 런타임은 필요할 때 분리합니다.
+Node.js 24와 별도의 PostgreSQL 17이 필요합니다. `.env.example`을 `.env`로 복사한 뒤 DB 주소와 서로 다른 임의의 긴 비밀값 두 개를 설정합니다. 비밀값·서비스 계정 JSON·실제 회원 명단은 커밋하지 않습니다.
 
-학교 비밀번호를 받는 로그인 폼, Discord OAuth, 봇, 자동 역할 동기화, 자체 OIDC 제공자는 첫 버전에 포함하지 않습니다. 학교 callback 동작은 실제 PoC로 검증해야 합니다.
+```sh
+npm ci
+npm run build
+npm run db:migrate
+# 합성 계정을 사용하려는 비공개 개발 환경에서만 .env의 PASSPORT_AUTH_MODE=development 설정
+node --env-file=.env dist/seed-development.js
+node --env-file=.env dist/main.js
+```
 
-## 다음 작업
+웹은 `/v1`을 API로 프록시하며 원래 `Host`와 `Origin`을 보존해야 합니다. 브라우저 Origin은 `WEB_ORIGIN` 또는 `ADMIN_ORIGIN`과 정확히 일치해야 합니다. 웹 브라우저에 `API_SERVICE_TOKEN`을 전달하지 않습니다. `BIND_HOST` 기본값은 `127.0.0.1`이고 Docker 이미지는 컨테이너 내부에서 `0.0.0.0`을 사용합니다. 개발 이미지의 외부 포트는 VPN 주소나 loopback에만 공개합니다.
 
-1. [계약 저장소](https://github.com/underconnor/passport-contracts)의 초안을 확정합니다.
-2. Nest/DB/worker 기본 빌드와 가상 school/member provider를 구성합니다.
-3. 학교 콜백·학교 신원 매핑·host별 세션과 CSRF 처리를 구현합니다.
-4. Sheets 검증·동기화, 연결 트랜잭션, 정책 API를 구현합니다.
-5. 사용자 웹·Velocity와 최초 연결을 검증하고 관리 기능을 확장합니다.
+## 검사
 
-[구현 계획](docs/implementation-plan.md) · [소스 모듈](src/README.md)
+```sh
+npm run check
+# TEST_DATABASE_URL은 이름이 _test로 끝나는 전용 DB여야 함
+DATABASE_URL="$TEST_DATABASE_URL" npm run db:migrate
+npm run test:integration
+npm audit
+```
 
-사용자 화면은 [passport-web](https://github.com/underconnor/passport-web), 관리 화면은 [passport-admin](https://github.com/underconnor/passport-admin), 게임 접속은 [passport-velocity](https://github.com/underconnor/passport-velocity)와 [passport-paper](https://github.com/underconnor/passport-paper)가 담당합니다. 각 저장소는 고정 계약 버전으로 연결합니다.
+통합 테스트는 해당 전용 DB의 Passport 테이블을 초기화합니다. 이름 검사만으로 운영 DB와의 분리가 보장되지는 않으므로 CI 또는 격리된 DB만 지정합니다. 현재 빌드, 단위·명부 파서 7개, 실제 PostgreSQL 통합 13개를 통과했습니다. 통합 검사는 서비스 인증, 세션 회전·CSRF·host 분리, 두 가지 확인 순서, 만료·재사용·중복 UUID/회원, 동시 확정, 로그아웃·접속 취소, 회원 정지·유효기간, Discord 범위를 포함합니다.
+
+## 배포
+
+```sh
+docker build -t passport-api:local .
+# 실행 전 동일 이미지와 DB 설정으로 npm run db:migrate 실행
+# 개발 인증이 필요한 환경에서만 npm run db:seed:development 실행
+```
+
+이미지는 비특권 사용자로 실행하며 `/healthz`에서 DB 연결을 확인합니다. 스키마 적용과 fixture 생성은 서버 시작에 자동으로 포함하지 않습니다. 의존성은 lockfile로 고정합니다. Prisma CLI의 `deepmerge-ts` 간접 의존성은 보안 수정 버전 8.0.0으로 재정의했고 생성·migration·빌드를 검증했습니다.
+
+[실행 API와 환경 변수](docs/runtime-api.md) · [Sheets 연결 준비](docs/sheets-integration.md) · [남은 구현](docs/implementation-plan.md)
+
+공개 저장소의 CI·빌드는 비공개 계약 저장소 없이 독립적으로 동작합니다. 현재 Minecraft 응답 계약 식별자는 `0.1.0-draft`입니다.

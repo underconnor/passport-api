@@ -1,0 +1,36 @@
+name: API checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: passport_ci
+          POSTGRES_PASSWORD: ci-fixture-only-password
+          POSTGRES_DB: passport_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U passport_ci -d passport_ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://passport_ci:ci-fixture-only-password@localhost:5432/passport_ci_test
+      TEST_DATABASE_URL: postgresql://passport_ci:ci-fixture-only-password@localhost:5432/passport_ci_test
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run db:migrate
+      - run: npm run test:integration
+      - run: npm audit --omit=dev
+      - run: docker build -t passport-api:ci .

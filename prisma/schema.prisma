@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+model Subject {
+  id String @id @default(uuid()) @db.Uuid
+  universityKey String @unique
+  displayName String
+  identityProvider String
+  membershipStatus String @default("inactive")
+  roleLabel String @default("")
+  verifiedUntil DateTime
+  allowedServerIds String[] @default([])
+  discordId String?
+  discordUpdatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions WebSession[]
+  minecraft MinecraftIdentity?
+  links LinkSession[]
+}
+model WebSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  subjectId String? @db.Uuid
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  audienceHost String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  confirmedLinks LinkSession[]
+  @@index([expiresAt])
+}
+model MinecraftIdentity {
+  uuid String @id @db.Uuid
+  name String
+  subjectId String? @unique @db.Uuid
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  policyVersion Int @default(1)
+  policyFingerprint String @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model LinkSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  minecraftUuid String @db.Uuid
+  minecraftName String
+  gameSessionHash String
+  status String @default("pending")
+  subjectId String? @db.Uuid
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  webSessionId String? @db.Uuid
+  webSession WebSession? @relation(fields: [webSessionId], references: [id], onDelete: SetNull)
+  webConfirmedAt DateTime?
+  gameConfirmedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@index([minecraftUuid, status])
+  @@index([expiresAt])
+}
+model PolicyEvent {
+  id BigInt @id @default(autoincrement())
+  minecraftUuid String @db.Uuid
+  policyVersion Int
+  createdAt DateTime @default(now())
+}
+model AuditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  action String
+  subjectId String? @db.Uuid
+  objectId String?
+  createdAt DateTime @default(now())
+}
