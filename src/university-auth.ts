@@ -6,7 +6,7 @@ import { studentKey } from './integrations/sheets';
 import { membershipForStudent } from './membership-sync';
 import { hash, opaqueToken, equal } from './security';
 import { seal, unseal } from './sealed';
-import { serializable } from './database';
+import { policyTransaction, serializable } from './database';
 
 export type UniversityStartInput = { link?: { id: string; token: string } };
 export const universityAdapter = new SsuSaintAdapter();
@@ -45,7 +45,7 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
     const key = studentKey(identity.studentNumber, p.config.matchingSecret);
     const token = opaqueToken();
     const tokenHash = hash(`ssu-token:${input.sToken}`);
-    await serializable(p.db, async tx => {
+    await policyTransaction(p.db, async tx => {
       const current = await tx.universityAuthRequest.findUnique({ where: { id: attempt.id } });
       const session = await tx.webSession.findUnique({ where: { id: context.session.id } });
       if (!current || current.status !== 'processing' || current.expiresAt <= new Date() || !session || session.expiresAt <= new Date()) throw new UnauthorizedException({ code: 'university_request_expired' });
@@ -55,6 +55,11 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
       const now = new Date();
       const data = { displayName: identity.name, identityProvider: 'usaint', department: identity.department, academicStatus: identity.academicStatus, universityVerifiedAt: now, universityVerifiedUntil: new Date(now.getTime() + 180 * 86_400_000), ...membership };
       const subject = await tx.subject.upsert({ where: { universityKey: key }, create: { universityKey: key, ...data }, update: data });
+      const minecraft = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
+      if (minecraft) {
+        const changed = await tx.minecraftIdentity.update({ where: { uuid: minecraft.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
+        await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
+      }
       await tx.consumedUniversityToken.upsert({ where: { tokenHash }, create: { tokenHash, expiresAt: new Date(now.getTime() + 24 * 60 * 60_000) }, update: { expiresAt: new Date(now.getTime() + 24 * 60 * 60_000) } });
       await tx.webSession.delete({ where: { id: context.session.id } });
       await tx.webSession.create({ data: { tokenHash: hash(token), subjectId: subject.id, audienceHost: session.audienceHost, expiresAt: new Date(now.getTime() + 8 * 60 * 60_000) } });

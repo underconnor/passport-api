@@ -4,7 +4,7 @@ import { Request, Response } from 'express';
 import { parse as parseCookie, serialize } from 'cookie';
 import { Config, configFromEnv } from './config';
 import { hash, opaqueToken, equal, csrf } from './security';
-import { serializable } from './database';
+import { policyTransaction, serializable } from './database';
 import { startMembershipSync } from './membership-sync';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
@@ -152,6 +152,7 @@ export class PassportService {
     if (!['pending', 'linked'].includes(link.status)) throw new ConflictException({ code: 'link_consumed' });
     return { id: link.id, minecraftName: link.minecraftName, minecraftUuid: link.minecraftUuid, status: link.status, expiresAt: link.expiresAt.toISOString(), webConfirmed: Boolean(link.webConfirmedAt), gameConfirmed: Boolean(link.gameConfirmedAt) };
   }
+  // Both callers enter policyTransaction before reading or updating the link.
   async finishLink(tx: Prisma.TransactionClient, link: LinkSession) {
     if (!link.gameConfirmedAt || !link.webConfirmedAt) return link;
     if (!link.subjectId || !link.webSessionId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
@@ -171,7 +172,7 @@ export class PassportService {
   summary(link: LinkSession) { return { id: link.id, status: link.status, expiresAt: link.expiresAt.toISOString() }; }
   async webConfirm(req: Request, id: string, token: string) {
     const c = await this.mutation(req);
-    const link = await serializable(this.db, async tx => {
+    const link = await policyTransaction(this.db, async tx => {
       const found = await tx.linkSession.findUnique({ where: { id } });
       if (!found || !equal(found.tokenHash, hash(token))) throw new NotFoundException({ code: 'link_not_found' });
       this.ensurePending(found);
@@ -185,7 +186,7 @@ export class PassportService {
   }
   async gameConfirm(req: Request, id: string, input: { minecraftUuid: string; gameSessionId: string }) {
     this.service(req);
-    const link = await serializable(this.db, async tx => {
+    const link = await policyTransaction(this.db, async tx => {
       const found = await tx.linkSession.findUnique({ where: { id } });
       this.ensurePending(found);
       if (found.minecraftUuid !== input.minecraftUuid || !equal(found.gameSessionHash, hash(input.gameSessionId))) throw new ForbiddenException({ code: 'game_session_mismatch' });
@@ -206,7 +207,7 @@ export class PassportService {
   }
   async policy(req: Request, uuid: string) {
     this.service(req);
-    return serializable(this.db, async tx => {
+    return policyTransaction(this.db, async tx => {
       const now = new Date();
       const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: true } });
       const subject = identity.subject;

@@ -85,6 +85,17 @@ test('unknown or expired roster never grants a verified school user game access'
  const stale=await login('99990002');assert.deepEqual((await browser(request(http).get('/v1/me/servers'),stale).expect(200)).body.servers,[]);
  assert.equal((await policy((await minecraft(stale.profile.id)).uuid)).status,'stale');
 });
+test('school reauthentication restores a linked expired identity and emits its new policy version',async()=>{
+ const member=await login();const game=await minecraft(member.profile.id);await policy(game.uuid);
+ await db.subject.update({where:{id:member.profile.id},data:{universityVerifiedUntil:new Date(Date.now()-1)}});
+ const expired=await policy(game.uuid);assert.equal(expired.status,'stale');
+ const eventsBefore=await db.policyEvent.count({where:{minecraftUuid:game.uuid}});
+ const renewed=await login();assert.equal(renewed.profile.id,member.profile.id);assert.ok(Date.parse(renewed.profile.universityVerifiedUntil)>Date.now());
+ const identity=await db.minecraftIdentity.findUnique({where:{uuid:game.uuid}});assert.equal(identity.policyVersion,expired.policyVersion+1);assert.equal(identity.policyFingerprint,'');
+ assert.equal(await db.policyEvent.count({where:{minecraftUuid:game.uuid}}),eventsBefore+1);
+ const event=await db.policyEvent.findFirst({where:{minecraftUuid:game.uuid},orderBy:{id:'desc'}});assert.equal(event.policyVersion,identity.policyVersion);
+ const restored=await policy(game.uuid);assert.equal(restored.status,'active');assert.equal(restored.policyVersion,identity.policyVersion);assert.deepEqual(restored.allowedServerIds,['lobby','survival']);
+});
 test('school failure consumes its request and expired browser session cannot finish in-flight verification',async()=>{
  const user=await anonymous();const attempt=await begin(user);universityAdapter.verify=async()=>{throw new UniversityVerificationError('rejected');};
  assert.equal((await callback(user,attempt)).headers.location,'/?auth_error=university_rejected');assert.equal((await callback(user,attempt)).headers.location,'/?auth_error=university_request_consumed');

@@ -2,7 +2,7 @@ import { ConflictException, ForbiddenException, NotFoundException } from '@nestj
 import type { Request, Response } from 'express';
 import type { PassportService } from './passport.service';
 import { equal, opaqueToken, hash, csrf } from './security';
-import { serializable } from './database';
+import { policyTransaction, serializable } from './database';
 import { newTotpSecret, verifyTotp } from './totp';
 import { seal, unseal } from './sealed';
 
@@ -82,7 +82,7 @@ export async function adminMembers(p: PassportService, req: Request, cursor?: st
 export async function setMemberAccess(p: PassportService, req: Request, id: string, input: { suspended: boolean; restricted: boolean; serverIds: string[] }) {
   const actor = await adminContext(p, req, true);
   if (input.serverIds.some(id => !p.config.servers.some(s => s.id === id)) || new Set(input.serverIds).size !== input.serverIds.length) throw new ForbiddenException({ code: 'invalid_server_scope' });
-  return serializable(p.db, async tx => {
+  return policyTransaction(p.db, async tx => {
     const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true } });
     if (!current || current.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
     await tx.subject.update({ where: { id }, data: { accessSuspended: input.suspended, scopeRestricted: input.restricted, scopeLimit: input.restricted ? input.serverIds : [] } });
@@ -96,7 +96,7 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
 }
 export async function unlinkMember(p: PassportService, req: Request, id: string) {
   const actor = await adminContext(p, req, true);
-  return serializable(p.db, async tx => {
+  return policyTransaction(p.db, async tx => {
     const minecraft = await tx.minecraftIdentity.findUnique({ where: { subjectId: id } });
     if (!minecraft) throw new NotFoundException({ code: 'minecraft_not_linked' });
     const changed = await tx.minecraftIdentity.update({ where: { uuid: minecraft.uuid }, data: { subjectId: null, policyVersion: { increment: 1 }, policyFingerprint: '' } });

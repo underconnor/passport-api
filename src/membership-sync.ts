@@ -1,6 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { serializable } from './database';
+import { policyTransaction, serializable } from './database';
 import { readGoogleSheet, RosterEntry, SheetsConfig, sheetsConfig, validateSnapshotChange } from './integrations/sheets';
 
 const currentSnapshotId = 'current';
@@ -55,7 +55,7 @@ export function previewRosterSnapshot(db: PrismaClient, input: RosterSnapshotInp
 
 /** This is the sole roster mutation: snapshot, subjects, audit, and policy outbox commit together. */
 export function applyRosterSnapshot(db: PrismaClient, input: RosterSnapshotInput, options: RosterSyncOptions, now = new Date()): Promise<RosterSyncSummary> {
-  return serializable(db, async tx => {
+  return policyTransaction(db, async tx => {
     const preview = await previewInTransaction(tx, input, options, now);
     if (options.expectedApprovalDigest && options.expectedApprovalDigest !== preview.digest) throw new RosterSyncError('approval_mismatch', preview);
     if (preview.risks.length && options.expectedApprovalDigest !== preview.digest) throw new RosterSyncError('approval_required', preview);

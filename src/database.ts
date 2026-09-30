@@ -8,3 +8,13 @@ export async function serializable<T>(db: PrismaClient, fn: (tx: Prisma.Transact
     }
   }
 }
+
+/** Keep sequence allocation and commit order aligned for the policy-event cursor. */
+export function policyTransaction<T>(db: PrismaClient, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return serializable(db, async tx => {
+    // Acquire before any row access. Every policy-event producer uses this same
+    // database-wide transaction lock; PostgreSQL releases it on commit/rollback.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1346458451, 1347374153)`;
+    return fn(tx);
+  });
+}
