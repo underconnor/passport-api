@@ -1,5 +1,7 @@
 # Passport API
 
+[개발 배포 검증 범위](docs/verification.md)
+
 학교 신원, 회원 명단, Minecraft 계정 연결과 서버 접근 정책을 관리하는 독립 백엔드입니다. Node.js 24, NestJS 12, PostgreSQL 17, Prisma 6을 사용합니다.
 
 ## 현재 구현
