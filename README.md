@@ -11,10 +11,13 @@
 - UUID별 단조 증가 정책 버전, 최대 60초 lease, 회원·명부 유효기간 만료 시 차단, 변경 outbox 기록
 - 자기신고 Discord ID 입력·수정·삭제. 양의 uint64 문자열만 받으며 소유권 확인이나 권한 증거로 사용하지 않음
 - 명시적으로 켜는 합성 개발 회원·비회원. `NODE_ENV=production`에서는 개발 인증 시작 자체를 거부
-- Google Sheets 읽기 전용 어댑터, 필수 열·중복·범위 검사, HMAC 학번 매칭 키와 검증 전용 CLI
+- 학교 공식 로그인 → 브라우저에 묶인 단회 콜백 → SAP 토큰 교환 → 학교 학번 대조, HMAC 신원 매칭과 세션 회전
+- Google Sheets 읽기 전용 어댑터, 원자적 명부 snapshot 반영, 60초 자동 동기화와 15분 freshness, 위험 변경 digest 승인
+- 관리자 학교 인증 + 최초 등록 코드 + TOTP, 회원 조회·접속 정지·서버 범위 제한·Minecraft 연결 해제·감사 조회
+- 서비스 인증으로 보호하는 outbox cursor API, 유실·보관 기간 경과·DB 복원 시 전체 재검사 신호
 - 만료 세션 정리와 단일 인스턴스용 요청 제한
 
-**실제 학교 인증과 실제 명부 동기화는 아직 연결하지 않았습니다.** 학교 인증 경로는 503으로 닫혀 있고, Sheets CLI는 DB를 변경하지 않습니다. 관리자 권한 등록·MFA·실제 관리 API도 활성화하지 않았습니다. SSE 전송은 아직 없으며 게임 서버는 정책 polling을 사용합니다. 개발 데이터를 학교 인증 결과로 취급해서는 안 됩니다.
+실제 학교·명부·관리자 코드가 연결되어 있습니다. 학교 비밀번호는 이 API에서 받지 않으며, 학교에서 받은 토큰·세션 쿠키·원본 HTML은 영속 저장하거나 로그에 남기지 않습니다. 실제 학교 계정의 콜백 왕복과 정품 게임 클라이언트의 전체 접속 QA는 별도 확인해야 합니다. 공개 운영에는 HTTPS와 분리된 비밀값을 사용하고 개발 인증을 끕니다.
 
 ## 로컬 실행
 
@@ -41,7 +44,7 @@ npm run test:integration
 npm audit
 ```
 
-통합 테스트는 해당 전용 DB의 Passport 테이블을 초기화합니다. 이름 검사만으로 운영 DB와의 분리가 보장되지는 않으므로 CI 또는 격리된 DB만 지정합니다. 현재 빌드, 단위·명부 파서 7개, 실제 PostgreSQL 통합 13개를 통과했습니다. 통합 검사는 서비스 인증, 세션 회전·CSRF·host 분리, 두 가지 확인 순서, 만료·재사용·중복 UUID/회원, 동시 확정, 로그아웃·접속 취소, 회원 정지·유효기간, Discord 범위를 포함합니다.
+통합 테스트는 해당 전용 DB의 Passport 테이블을 초기화합니다. 이름 검사만으로 운영 DB와의 분리가 보장되지는 않으므로 CI 또는 격리된 DB만 지정합니다. 단위 검사와 학교 파서, 명부 동기화, 실제 PostgreSQL 기반 학교 세션·MFA·정책 통합 검사를 실행합니다. 통합 검사는 서비스 인증, 세션 회전·CSRF·host 분리, 두 가지 확인 순서, 만료·재사용·중복 UUID/회원, 동시 확정, 로그아웃·접속 취소, 회원 정지·유효기간, Discord 범위를 포함합니다.
 
 ## 배포
 
@@ -53,6 +56,6 @@ docker build -t passport-api:local .
 
 이미지는 비특권 사용자로 실행하며 `/healthz`에서 DB 연결을 확인합니다. 스키마 적용과 fixture 생성은 서버 시작에 자동으로 포함하지 않습니다. 의존성은 lockfile로 고정합니다. Prisma CLI의 `deepmerge-ts` 간접 의존성은 보안 수정 버전 8.0.0으로 재정의했고 생성·migration·빌드를 검증했습니다.
 
-[실행 API와 환경 변수](docs/runtime-api.md) · [Sheets 연결 준비](docs/sheets-integration.md) · [남은 구현](docs/implementation-plan.md)
+[실행 API와 환경 변수](docs/runtime-api.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
 
 공개 저장소의 CI·빌드는 비공개 계약 저장소 없이 독립적으로 동작합니다. 현재 Minecraft 응답 계약 식별자는 `0.1.0-draft`입니다.

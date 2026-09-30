@@ -1,10 +1,11 @@
-import { Injectable, UnauthorizedException, ForbiddenException, NotFoundException, ConflictException, GoneException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, NotFoundException, ConflictException, GoneException, ServiceUnavailableException, BadRequestException } from '@nestjs/common';
 import { PrismaClient, Prisma, WebSession, Subject, LinkSession } from '@prisma/client';
 import { Request, Response } from 'express';
 import { parse as parseCookie, serialize } from 'cookie';
 import { Config, configFromEnv } from './config';
 import { hash, opaqueToken, equal, csrf } from './security';
 import { serializable } from './database';
+import { startMembershipSync } from './membership-sync';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -13,14 +14,18 @@ export class PassportService {
   readonly config: Config = configFromEnv();
   readonly db = new PrismaClient({ datasources: { db: { url: this.config.databaseUrl } } });
   private cleanupTimer?: NodeJS.Timeout;
+  membership!: ReturnType<typeof startMembershipSync>;
   async onModuleInit() {
     await this.db.$connect();
+    this.membership = startMembershipSync(this.db);
     this.cleanupTimer = setInterval(() => { void this.cleanup().catch(() => {}); }, 60000);
     this.cleanupTimer.unref();
   }
-  async onModuleDestroy() { clearInterval(this.cleanupTimer); await this.db.$disconnect(); }
+  async onModuleDestroy() { clearInterval(this.cleanupTimer); this.membership?.stop(); await this.db.$disconnect(); }
   async cleanup() {
     const now = new Date();
+    await this.db.universityAuthRequest.deleteMany({ where: { expiresAt: { lte: now } } });
+    await this.db.consumedUniversityToken.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.webSession.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.linkSession.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) } } });
     await this.db.policyEvent.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } } });
@@ -93,7 +98,7 @@ export class PassportService {
   }
   async profile(subject: Subject, token: string) {
     const minecraft = await this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
-    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, membership: { status: subject.membershipStatus, roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
   async logout(req: Request, res: Response) {
@@ -113,7 +118,13 @@ export class PassportService {
   async myServers(req: Request) {
     const c = await this.context(req, true);
     const s = c.session.subject!;
-    return { servers: s.membershipStatus === 'active' && s.verifiedUntil > new Date() ? this.config.servers.filter(server => s.allowedServerIds.includes(server.id)) : [] };
+    return { servers: this.accessStatus(s) === 'active' ? this.config.servers.filter(server => s.allowedServerIds.includes(server.id) && (!s.scopeRestricted || s.scopeLimit.includes(server.id))) : [] };
+  }
+  accessStatus(subject: Subject, now = new Date()) {
+    if (subject.accessSuspended || subject.membershipStatus === 'suspended') return 'suspended';
+    if (subject.membershipStatus !== 'active') return 'revoked';
+    if (subject.verifiedUntil <= now || (subject.identityProvider === 'usaint' && (!subject.universityVerifiedUntil || subject.universityVerifiedUntil <= now))) return 'stale';
+    return 'active';
   }
   async createLink(req: Request, input: { minecraftUuid: string; minecraftName: string; gameSessionId: string }) {
     this.service(req);
@@ -147,7 +158,7 @@ export class PassportService {
     const session = await tx.webSession.findUnique({ where: { id: link.webSessionId } });
     const subject = await tx.subject.findUnique({ where: { id: link.subjectId } });
     if (!session || session.expiresAt <= new Date() || session.subjectId !== link.subjectId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
-    if (!subject || subject.membershipStatus !== 'active' || subject.verifiedUntil <= new Date()) throw new ForbiddenException({ code: 'membership_required' });
+    if (!subject || this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
     const previous = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
     if (previous && previous.uuid !== link.minecraftUuid) throw new ConflictException({ code: 'subject_already_linked' });
     const updated = await tx.minecraftIdentity.updateMany({ where: { uuid: link.minecraftUuid, subjectId: null }, data: { subjectId: subject.id, policyVersion: { increment: 1 }, policyFingerprint: '' } });
@@ -166,7 +177,7 @@ export class PassportService {
       this.ensurePending(found);
       if (found.webConfirmedAt) throw new ConflictException({ code: 'web_confirmation_consumed' });
       const subject = await tx.subject.findUniqueOrThrow({ where: { id: c.session.subjectId! } });
-      if (subject.membershipStatus !== 'active' || subject.verifiedUntil <= new Date()) throw new ForbiddenException({ code: 'membership_required' });
+      if (this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
       const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId: c.session.id, webConfirmedAt: new Date() } });
       return this.finishLink(tx, claimed);
     });
@@ -199,8 +210,8 @@ export class PassportService {
       const now = new Date();
       const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: true } });
       const subject = identity.subject;
-      const status = !subject ? 'unlinked' : subject.membershipStatus === 'suspended' ? 'suspended' : subject.membershipStatus !== 'active' ? 'revoked' : subject.verifiedUntil <= now ? 'stale' : 'active';
-      const allowedServerIds = status === 'active' ? this.config.servers.filter(s => subject!.allowedServerIds.includes(s.id)).map(s => s.id) : [];
+      const status = !subject ? 'unlinked' : this.accessStatus(subject, now);
+      const allowedServerIds = status === 'active' ? this.config.servers.filter(s => subject!.allowedServerIds.includes(s.id) && (!subject!.scopeRestricted || subject!.scopeLimit.includes(s.id))).map(s => s.id) : [];
       const display = { roleLabel: status === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: subject ? subject.displayName.slice(0, 40) : identity.name };
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display }));
       let policyVersion = identity.policyVersion;
@@ -209,8 +220,21 @@ export class PassportService {
         policyVersion = changed.policyVersion;
         if (identity.policyFingerprint) await tx.policyEvent.create({ data: { minecraftUuid: uuid, policyVersion } });
       }
-      const expires = status === 'active' ? Math.min(now.getTime() + 60000, subject!.verifiedUntil.getTime()) : now.getTime() + 60000;
+      const expires = status === 'active' ? Math.min(now.getTime() + 60000, subject!.verifiedUntil.getTime(), subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
       return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, display, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(expires).toISOString() };
+    });
+  }
+  async policyEvents(req: Request, after?: string) {
+    this.service(req);
+    if (after !== undefined && (typeof after !== 'string' || !/^\d{1,19}$/.test(after) || BigInt(after) > 9223372036854775807n)) throw new BadRequestException({ code: 'invalid_cursor' });
+    return serializable(this.db, async tx => {
+      const last = await tx.policyEvent.findFirst({ orderBy: { id: 'desc' }, select: { id: true } });
+      const first = await tx.policyEvent.findFirst({ orderBy: { id: 'asc' }, select: { id: true } });
+      const latest = last?.id ?? 0n;
+      const cursor = after === undefined ? null : BigInt(after);
+      if (cursor === null || cursor > latest || (first && cursor < first.id - 1n)) return { cursor: latest.toString(), reset: true, events: [] };
+      const rows = await tx.policyEvent.findMany({ where: { id: { gt: cursor } }, orderBy: { id: 'asc' }, take: 500, select: { id: true, minecraftUuid: true, policyVersion: true } });
+      return { cursor: (rows.at(-1)?.id ?? cursor).toString(), reset: false, events: rows.map(row => ({ ...row, id: row.id.toString() })) };
     });
   }
 }

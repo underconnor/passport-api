@@ -10,6 +10,13 @@ model Subject {
   universityKey String @unique
   displayName String
   identityProvider String
+  department String @default("")
+  academicStatus String @default("UNKNOWN")
+  universityVerifiedAt DateTime?
+  universityVerifiedUntil DateTime?
+  accessSuspended Boolean @default(false)
+  scopeRestricted Boolean @default(false)
+  scopeLimit String[] @default([])
   membershipStatus String @default("inactive")
   roleLabel String @default("")
   verifiedUntil DateTime
@@ -21,6 +28,7 @@ model Subject {
   sessions WebSession[]
   minecraft MinecraftIdentity?
   links LinkSession[]
+  administrator Administrator?
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -31,6 +39,8 @@ model WebSession {
   expiresAt DateTime
   createdAt DateTime @default(now())
   confirmedLinks LinkSession[]
+  universityRequests UniversityAuthRequest[]
+  mfaVerifiedUntil DateTime?
   @@index([expiresAt])
 }
 model MinecraftIdentity {
@@ -73,5 +83,53 @@ model AuditEvent {
   action String
   subjectId String? @db.Uuid
   objectId String?
+  actorSubjectId String? @db.Uuid
+  details Json?
   createdAt DateTime @default(now())
+}
+model UniversityAuthRequest {
+  id String @id @default(uuid()) @db.Uuid
+  stateHash String @unique
+  webSessionId String @db.Uuid
+  webSession WebSession @relation(fields: [webSessionId], references: [id], onDelete: Cascade)
+  returnContext String?
+  status String @default("pending")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([expiresAt])
+}
+model ConsumedUniversityToken {
+  tokenHash String @id
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+model Administrator {
+  subjectId String @id @db.Uuid
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  totpSecret String
+  enabled Boolean @default(false)
+  lastTotpStep BigInt @default(-1)
+  failedAttempts Int @default(0)
+  lockedUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model RosterSnapshot {
+  id String @id
+  sourceKey String
+  digest String
+  fetchedAt DateTime
+  expiresAt DateTime
+  entryCount Int
+  updatedAt DateTime @updatedAt
+  entries RosterMembership[]
+}
+model RosterMembership {
+  studentKey String @id
+  status String
+  roleLabel String
+  serverIds String[] @default([])
+  snapshotId String
+  snapshot RosterSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 }

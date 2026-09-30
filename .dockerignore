@@ -6,3 +6,11 @@ dist
 !.env.example
 coverage
 test
+private
+secrets
+*.pem
+*.key
+*.dump
+*.har
+service-account*.json
+*credentials*.json

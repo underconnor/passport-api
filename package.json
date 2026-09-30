@@ -14,22 +14,27 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed:development": "node dist/seed-development.js",
-    "test": "node --test test/unit.test.cjs",
-    "test:integration": "node --test --test-concurrency=1 test/integration.test.cjs",
+    "test": "node --test test/unit.test.cjs test/usaint.test.cjs test/sheets-public.test.cjs test/totp.test.cjs",
+    "test:integration": "node scripts/prepare-test-schemas.cjs && node --test --test-concurrency=1 test/integration.test.cjs test/membership-sync.test.cjs test/real-auth.test.cjs",
     "check": "npm run build && npm test",
-    "sheets:check": "node dist/sheets-check.js"
+    "sheets:check": "node dist/sheets-check.js",
+    "test:membership": "node --test --test-concurrency=1 test/membership-sync.test.cjs",
+    "test:real-auth": "node --test --test-concurrency=1 test/real-auth.test.cjs",
+    "sheets:sync": "node dist/sheets-sync.js"
   },
   "dependencies": {
     "@nestjs/common": "12.1.2",
     "@nestjs/core": "12.1.2",
     "@nestjs/platform-express": "12.1.2",
     "@prisma/client": "6.19.3",
+    "cheerio": "1.1.2",
     "cookie": "1.0.2",
     "google-auth-library": "11.1.0",
     "helmet": "8.1.0",
     "prisma": "6.19.3",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
+    "tough-cookie": "6.0.0",
     "zod": "4.3.6"
   },
   "devDependencies": {

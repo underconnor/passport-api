@@ -112,3 +112,13 @@ test('school provider and admin remain explicitly unavailable',async()=>{
  const user=await login();await browser(request(http).post('/v1/auth/university/start'),user).send({}).expect(503);
  await browser(request(http).get('/v1/admin/overview'),user).expect(403);
 });
+test('policy events require service identity and recover initial, retained and reset cursors without numeric loss',async()=>{
+ await request(http).get('/v1/minecraft/events').expect(401);
+ const initial=await service(request(http).get('/v1/minecraft/events')).expect(200);assert.equal(initial.body.reset,true);assert.equal(initial.body.cursor,'0');
+ const uuid=randomUUID();await db.policyEvent.createMany({data:[{minecraftUuid:uuid,policyVersion:2},{minecraftUuid:uuid,policyVersion:3}]});
+ const next=await service(request(http).get('/v1/minecraft/events?after=0')).expect(200);assert.equal(next.body.reset,false);assert.deepEqual(next.body.events.map(e=>e.policyVersion),[2,3]);assert.equal(typeof next.body.events[0].id,'string');
+ const empty=await service(request(http).get(`/v1/minecraft/events?after=${next.body.cursor}`)).expect(200);assert.deepEqual(empty.body.events,[]);
+ await service(request(http).get('/v1/minecraft/events?after=-1')).expect(400);await service(request(http).get('/v1/minecraft/events?after=9999999999999999999')).expect(400);
+ await db.policyEvent.deleteMany({where:{id:1n}});const retained=await service(request(http).get('/v1/minecraft/events?after=0')).expect(200);assert.equal(retained.body.reset,true);
+ const restored=await service(request(http).get('/v1/minecraft/events?after=999')).expect(200);assert.equal(restored.body.reset,true);assert.equal(restored.body.cursor,next.body.cursor);
+});

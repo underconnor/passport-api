@@ -11,6 +11,12 @@ export const createLinkSchema = gameIdentitySchema.extend({ minecraftName: z.str
 export const linkTokenSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
 export const developmentIdentitySchema = z.object({ identity: z.enum(['member', 'outsider']) }).strict();
 export const discordSchema = z.object({ id: z.string().regex(/^[1-9][0-9]{0,19}$/).refine(s => /^[1-9][0-9]{0,19}$/.test(s) && BigInt(s) <= 18446744073709551615n) }).strict();
+export const universityStartSchema = z.object({ link: z.object({ id: uuidSchema, token: linkTokenSchema.shape.token }).strict().optional() }).strict();
+export const universityCallbackSchema = z.object({ sToken: z.string().min(16).max(8192), sIdno: z.string().regex(/^\d{8,10}$/) });
+export const enrollmentSchema = z.object({ bootstrapToken: z.string().min(43).max(128) }).strict();
+export const mfaSchema = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();
+export const accessSchema = z.object({ suspended: z.boolean(), restricted: z.boolean(), serverIds: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(64) }).strict();
+export const rosterSyncSchema = z.object({ expectedApprovalDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new BadRequestException({ code: 'invalid_request', message: 'Request has invalid fields' });
