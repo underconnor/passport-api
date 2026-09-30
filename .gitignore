@@ -1,0 +1,21 @@
+# Generated files
+node_modules/
+dist/
+build/
+.gradle/
+.idea/
+.DS_Store
+# Local configuration and private records
+.env
+.env.*
+!.env.example
+secrets/
+private/
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.har
+service-account*.json
+*credentials*.json
