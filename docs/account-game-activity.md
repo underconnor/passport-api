@@ -1,0 +1,29 @@
+# Account administration and game activity
+
+This extension keeps identity and activity in the existing PostgreSQL database. There is no public statistics API, raw student-number column, separate statistics database, or automatic public player ranking.
+
+## Account list and erasure
+
+`GET /v1/admin/members` is restricted to the configured admin origin, a current school session, and an enabled administrator. Parameters: `q` (trimmed, at most 128 characters), `membership=all|active|inactive|suspended`, `sort=name|newest|oldest`, `limit=1..50` (default 20), and an opaque signed `cursor`. Cursors bind all query settings and expire after 30 minutes. Results contain the existing member fields plus `revision`, `createdAt`, `administrator`, and nullable two-digit `admissionYear`; `total` and `nextCursor` accompany the list.
+
+The unified query checks real name, Minecraft name, Discord ID/user/display name and legacy reference ID. An exact 8–10 digit query also checks the HMAC university key. Full student numbers are never persisted or returned. The school callback and the roster import use the same keyed HMAC to recognize the same student. A partial school-number search is intentionally unavailable.
+
+`DELETE /v1/admin/members/:id` takes `{expectedRevision, confirmation}` where confirmation must equal the displayed name. It requires the same administrator checks plus same-origin CSRF. It rejects the caller's own account, the last enabled administrator, stale revision, and mismatched confirmation. The operator helper `eraseSubject` uses a distinct `ops.subject_deleted` audit action when actor is null; it never creates or impersonates a web session.
+
+Erasure deletes the Passport subject, sessions, consent, semester history, linking requests and all activity generations/counters. The source Google Sheet and roster HMAC record remain, so an eligible person can register again. A minimal Minecraft UUID/policy-version tombstone remains to reject old cached policies; its old name is erased and telemetry generation rotates. Discord jobs are projected to revoke roles and restore bot-owned nickname. The orphan contains no Discord name; its technical Discord ID and queue are deleted only after current-version acknowledgments confirm completion. Backup copies follow the existing encrypted retention period.
+
+## Game policy and presence
+
+`GET /v1/minecraft/policies/:uuid` adds `allowedServers:[{id,label}]`, `administrator:boolean`, `display.member`, nullable `display.admissionYear`, and `telemetry:{enabled,epoch}`. Existing policy status/server authorization continues for people with older consent. Version `2026-10-01.4` is required before real name, member/year display, presence, or activity collection. Old `.3` remains sufficient for previously approved Discord synchronization. `POST /v1/me/privacy/consent {consent:{accepted:true,version}}` records the explicit updated consent and invalidates cached policy. A missing year remains null until a new verified school login supplies a valid four-digit admission-year prefix; there is no reversal of the HMAC.
+
+`GET /v1/minecraft/players?query=...` returns up to 20 linked players matched by name, IGN, or exact UUID. Fields are `minecraftUuid`, `minecraftName`, `displayName`, `member`, `admissionYear`, `administrator`, `online`, `serverId`, `lastSeenAt`. It requires the private Minecraft service credential; player-facing administrative commands must also check the invoking player's fresh central administrator policy.
+
+`POST /v1/minecraft/presence {serverId,observedAt,players:[uuid]}` accepts at most 500 distinct players. Observations may be at most 30 seconds old or 10 seconds ahead. Only linked, consented, currently permitted players are stored. The snapshot replaces that server's previous observations only when newer and expires after 90 seconds. Last-seen history is cleared after one day. This is server presence, not position tracking.
+
+## Activity
+
+`POST /v1/minecraft/stats/batches` accepts `{id,serverId,records}`. Every record contains `minecraftUuid`, `epoch`, and six integer counters: `playSeconds`, `blocksBroken`, `blocksPlaced`, `damageTakenMilli`, `deaths`, `mobKills`. A batch has 1–100 records with unique Minecraft UUIDs. Each delta must be between zero and 2,147,483,647. Damage is in thousandths of one Minecraft health point; two health points are one heart.
+
+Batch IDs are UUIDs. Plugins must save the exact batch before sending and retry that ID/payload after timeouts. The API returns `{accepted:true,duplicate,received,ignored}`. A changed payload under the same ID conflicts. Validation, counters, receipt, deletion and policy changes use one database transaction with the common writer lock. Unlinked, old-generation, unconsented or no-longer-permitted records are ignored permanently. An unlink/relink or deletion rotates the telemetry epoch, so replaying an old saved batch cannot recreate erased account data. Idempotency receipts retain only a random batch ID, payload digest and aggregate counts; they retain no raw activity record.
+
+`GET /v1/me/stats` returns only the signed-in person's counters. `GET /v1/admin/stats` returns the overall counters and `playerCount`. `GET /v1/admin/members/:id/stats` requires an administrator. `GET /v1/minecraft/players/:uuid/stats` requires the private service credential. All responses use `{available:true,totals,servers:[{serverId,label,...counters}]}`. Owner responses suppress server labels for servers they can no longer access while retaining their own combined totals; administrators see all configured server breakdowns. Counters are JSON safe integers, with internal PostgreSQL bigint storage and explicit overflow rejection. The database starts empty; old gameplay is not fabricated or backfilled.

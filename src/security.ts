@@ -42,3 +42,10 @@ export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!result.success) throw new BadRequestException({ code: 'invalid_request', message: 'Request has invalid fields' });
   return result.data;
 }
+
+export const memberQuerySchema = z.object({ q: z.string().trim().max(128).default(''), membership: z.enum(['all','active','inactive','suspended']).default('all'), sort: z.enum(['name','newest','oldest']).default('name'), limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().max(1024).optional() }).strict();
+export const deleteMemberSchema = z.object({ expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmation: z.string().min(1).max(120) }).strict();
+export const playerQuerySchema = z.object({ query: z.string().trim().min(1).max(128) }).strict();
+export const presenceSchema = z.object({ serverId: serverIdSchema, observedAt: z.string().datetime({ offset: true }), players: z.array(uuidSchema).max(500).refine(ids => new Set(ids).size === ids.length) }).strict();
+const counterSchema = z.number().int().min(0).max(2147483647);
+export const activityBatchSchema = z.object({ id: uuidSchema, serverId: serverIdSchema, records: z.array(z.object({ minecraftUuid: uuidSchema, epoch: uuidSchema, playSeconds: counterSchema, blocksBroken: counterSchema, blocksPlaced: counterSchema, damageTakenMilli: counterSchema, deaths: counterSchema, mobKills: counterSchema }).strict()).min(1).max(100).refine(rows => new Set(rows.map(row => row.minecraftUuid)).size === rows.length) }).strict();

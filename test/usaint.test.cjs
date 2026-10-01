@@ -42,7 +42,7 @@ test('portal parser reads the school-rendered identifier and minimum identity fi
   assert.ok(!JSON.stringify(identity).includes('not-collected'));
 });
 test('student names remove only known anchored honorific and welcome suffixes',()=>{
- for(const name of ['김학생님','김학생님 환영합니다.','  김학생님\n 환영합니다.  '])assert.equal(parseStudentPortal(fixture({name}),callback.sIdno).name,'김학생');
+ for(const name of ['김학생님','김학생님 환영합니다.','김학생님 환영합니다','김학생님환영합니다!','김학생님 환영합니다。','  김학생님\n 환영합니다.  '])assert.equal(parseStudentPortal(fixture({name}),callback.sIdno).name,'김학생');
  assert.equal(parseStudentPortal(fixture({name:'Alex Kim님 환영합니다.'}),callback.sIdno).name,'Alex Kim');
  for(const name of ['김학생님 반갑습니다.','김학생님 환영합니다. 추가 안내','김학생님 환영합니다. 박학생님','님 환영합니다.','김학생 / 다른학생님','김학생'])assert.throws(()=>parseStudentPortal(fixture({name}),callback.sIdno),assertCode('parser_changed'));
 });

@@ -68,7 +68,7 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
       if (consumed && consumed.expiresAt > new Date()) throw new ConflictException({ code: 'university_token_consumed' });
       const membership = await membershipForStudent(tx, key);
       const now = new Date();
-      const data = { displayName: identity.name, identityProvider: 'usaint', department: identity.department, academicStatus: identity.academicStatus, universityVerifiedAt: now, universityVerifiedUntil: new Date(now.getTime() + 180 * 86_400_000), ...membership };
+      const data = { displayName: identity.name, identityProvider: 'usaint', department: identity.department, academicStatus: identity.academicStatus, admissionYear: /^(19|20)\d{6}$/.test(identity.studentNumber) ? identity.studentNumber.slice(2, 4) : null, universityVerifiedAt: now, universityVerifiedUntil: new Date(now.getTime() + 180 * 86_400_000), ...membership };
       const subject = await tx.subject.upsert({ where: { universityKey: key }, create: { universityKey: key, ...data }, update: data });
       if (portal) await recordConsent(tx, subject.id, 'portal_login', attempt.id, { version: current.consentVersion!, acceptedAt: current.consentAcceptedAt! });
       await refreshDiscordSubject(tx, subject.id, now);

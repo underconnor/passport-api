@@ -9,7 +9,7 @@ import { discordService } from './discord';
 import { policyTransaction } from './database';
 import { managementConsent, projectDiscordIdentity, refreshDiscordSubject } from './discord-policy';
 import { hash, equal, opaqueToken } from './security';
-import { ConsentInput, recordConsent, requireConsent } from './privacy';
+import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
 
 export type DiscordSettingsInput = { memberRoleId: string | null; currentSemester: string | null; semesterRoles: { semester: string; roleId: string }[]; nicknameEnabled: boolean; expectedRevision: string };
 export type DiscordClaimInput = { contractVersion: 2; guildId: string; settingsRevision: string; limit: number };
@@ -80,7 +80,7 @@ export async function renewDiscordConsent(p: PassportService, req: Request, inpu
   return policyTransaction(p.db, async tx => {
     const identity = await tx.discordIdentity.findUnique({ where: { subjectId: context.session.subjectId! } });
     if (!identity) throw new NotFoundException({ code: 'discord_not_linked' });
-    if (!await managementConsent(tx, context.session.subjectId!)) await recordConsent(tx, context.session.subjectId!, 'discord_link', randomUUID(), consent);
+    if (!await tx.consentReceipt.findFirst({ where: { subjectId: context.session.subjectId!, version: privacyNotice.version } })) await recordConsent(tx, context.session.subjectId!, 'discord_link', randomUUID(), consent);
     await refreshDiscordSubject(tx, context.session.subjectId!);
     return { updated: true };
   });

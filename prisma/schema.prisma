@@ -12,6 +12,7 @@ model Subject {
   identityProvider String
   department String @default("")
   academicStatus String @default("UNKNOWN")
+  admissionYear String? @db.VarChar(2)
   universityVerifiedAt DateTime?
   universityVerifiedUntil DateTime?
   accessSuspended Boolean @default(false)
@@ -33,6 +34,7 @@ model Subject {
   discordIdentity DiscordIdentity?
   discordLinks DiscordLinkSession[]
   membershipSemesters MembershipSemester[]
+  activityGenerations ActivityGeneration[]
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -54,6 +56,7 @@ model MinecraftIdentity {
   subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
   policyVersion Int @default(1)
   policyFingerprint String @default("")
+  telemetryEpoch String @default(uuid()) @db.Uuid
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -172,6 +175,7 @@ model DiscordIdentity {
   subjectId String? @unique @db.Uuid
   subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
   verifiedAt DateTime
+  eraseWhenRevoked Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   roles DiscordRoleState[]
@@ -266,4 +270,40 @@ model DiscordNicknameState {
   updatedAt DateTime @updatedAt
   @@unique([discordUserId, guildId])
   @@index([nextAttemptAt, leaseUntil])
+}
+
+model PlayerPresence {
+  minecraftUuid String @id @db.Uuid
+  serverId String
+  observedAt DateTime
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+model ActivityGeneration {
+  epoch String @id @db.Uuid
+  subjectId String @db.Uuid
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  minecraftUuid String @db.Uuid
+  createdAt DateTime @default(now())
+  totals ActivityTotal[]
+  @@index([subjectId])
+}
+model ActivityTotal {
+  epoch String @db.Uuid
+  generation ActivityGeneration @relation(fields: [epoch], references: [epoch], onDelete: Cascade)
+  serverId String
+  playSeconds BigInt @default(0)
+  blocksBroken BigInt @default(0)
+  blocksPlaced BigInt @default(0)
+  damageTakenMilli BigInt @default(0)
+  deaths BigInt @default(0)
+  mobKills BigInt @default(0)
+  @@id([epoch, serverId])
+}
+model ActivityBatch {
+  id String @id @db.Uuid
+  digest String
+  received Int
+  ignored Int
+  createdAt DateTime @default(now())
 }

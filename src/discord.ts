@@ -76,7 +76,7 @@ async function confirmDiscordLinkInTransaction(p: PassportService, tx: Prisma.Tr
   if (existingUser?.subjectId || existingSubject) throw new ConflictException({ code: 'discord_already_linked' });
   const now = new Date();
   await recordConsent(tx, subjectId, 'discord_link', id, consent);
-  const data = { guildId: link.guildId, username: link.username, displayName: link.displayName, subjectId, verifiedAt: now };
+  const data = { eraseWhenRevoked: false, guildId: link.guildId, username: link.username, displayName: link.displayName, subjectId, verifiedAt: now };
   await tx.discordIdentity.upsert({ where: { discordUserId: link.discordUserId }, create: { discordUserId: link.discordUserId, ...data }, update: data });
   await projectDiscordIdentity(tx, link.discordUserId, now);
   const completed = await tx.discordLinkSession.update({ where: { id }, data: { status: 'linked', subjectId, completedAt: now } });

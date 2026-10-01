@@ -59,7 +59,7 @@ function checkedText(value: string, max: number): string {
 export function universityName(value: string, requireGreeting = true): string {
   const text = checkedText(value, 120);
   // Parsed database names are already normalized: preserve a real name ending in 님.
-  const greeting = text.match(requireGreeting ? /^(.+?)님(?: 환영합니다\.)?$/u : /^(.+?)님 환영합니다\.$/u);
+  const greeting = text.match(requireGreeting ? /^(.+?)님(?: ?환영합니다[.!。！]?)?$/u : /^(.+?)님 ?환영합니다[.!。！]?$/u);
   if (requireGreeting && !greeting) throw new UniversityVerificationError('parser_changed');
   const name = checkedText(greeting ? greeting[1]! : text, 80);
   if (!/^[\p{L}\p{M}][\p{L}\p{M} .'’·-]*$/u.test(name) || /님\s|환영합니다/u.test(name)) throw new UniversityVerificationError('parser_changed');

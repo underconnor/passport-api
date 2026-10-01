@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { purgeRevokedDeletedAccounts } from './members';
+import { gameConsent, gameName, schoolActive } from './game-identity';
 import { Injectable, UnauthorizedException, ForbiddenException, NotFoundException, ConflictException, GoneException, ServiceUnavailableException, BadRequestException } from '@nestjs/common';
 import { PrismaClient, Prisma, WebSession, Subject, LinkSession, ServerRecord } from '@prisma/client';
 import { Request, Response } from 'express';
@@ -31,6 +34,8 @@ export class PassportService {
   async onModuleDestroy() { clearInterval(this.cleanupTimer); this.membership?.stop(); await this.db.$disconnect(); }
   async cleanup() {
     const now = new Date();
+    await purgeRevokedDeletedAccounts(this);
+    await this.db.playerPresence.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 60 * 60_000) } } });
     await this.db.universityAuthRequest.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.consumedUniversityToken.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.webSession.deleteMany({ where: { expiresAt: { lte: now } } });
@@ -201,7 +206,7 @@ export class PassportService {
     if (!consent) throw new ForbiddenException({ code: 'consent_required' });
     const previous = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
     if (previous && previous.uuid !== link.minecraftUuid) throw new ConflictException({ code: 'subject_already_linked' });
-    const updated = await tx.minecraftIdentity.updateMany({ where: { uuid: link.minecraftUuid, subjectId: null }, data: { subjectId: subject.id, policyVersion: { increment: 1 }, policyFingerprint: '' } });
+    const updated = await tx.minecraftIdentity.updateMany({ where: { uuid: link.minecraftUuid, subjectId: null }, data: { subjectId: subject.id, telemetryEpoch: randomUUID(), policyVersion: { increment: 1 }, policyFingerprint: '' } });
     if (updated.count !== 1) throw new ConflictException({ code: 'minecraft_already_linked' });
     const identity = await tx.minecraftIdentity.findUniqueOrThrow({ where: { uuid: link.minecraftUuid } });
     await refreshDiscordSubject(tx, subject.id);
@@ -252,7 +257,7 @@ export class PassportService {
     this.service(req);
     return policyTransaction(this.db, async tx => {
       const now = new Date();
-      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: true } });
+      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true } } } });
       const subject = identity.subject;
       const memberStatus = subject ? this.accessStatus(subject, now) : 'unlinked';
       const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
@@ -260,8 +265,12 @@ export class PassportService {
       // Policy active means game authorization, independently from club membership.
       const status = allowedServers.length ? 'active' : memberStatus === 'active' ? 'revoked' : memberStatus;
       const allowedServerIds = allowedServers.map(server => server.id);
-      const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: subject ? subject.displayName.slice(0, 40) : identity.name };
-      const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display }));
+      const consent = subject ? await gameConsent(tx, subject.id) : false;
+      const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: consent && subject && status === 'active' ? gameName(subject.displayName).slice(0, 40) : '', member: consent && status === 'active' && memberStatus === 'active', admissionYear: consent && status === 'active' ? subject?.admissionYear ?? null : null };
+      const administrator = Boolean(subject && schoolActive(subject, now) && subject.administrator?.enabled);
+      const telemetry = { enabled: consent && status === 'active', epoch: consent && status === 'active' ? identity.telemetryEpoch : null };
+      const serverChoices = allowedServers.map(({ id, label }) => ({ id, label }));
+      const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
       let policyVersion = identity.policyVersion;
       if (identity.policyFingerprint !== fingerprint) {
         const changed = await tx.minecraftIdentity.update({ where: { uuid }, data: { policyFingerprint: fingerprint, ...(identity.policyFingerprint ? { policyVersion: { increment: 1 } } : {}) } });
@@ -271,7 +280,7 @@ export class PassportService {
       const expires = status === 'active' ? Math.min(now.getTime() + 60000,
         allowedServers.some(server => server.accessMode !== 'university') || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
         subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
-      return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, display, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(expires).toISOString() };
+      return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, allowedServers: serverChoices, display, administrator, telemetry, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(administrator ? Math.min(expires, subject!.universityVerifiedUntil!.getTime()) : expires).toISOString() };
     });
   }
   async policyEvents(req: Request, after?: string) {
