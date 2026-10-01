@@ -9,7 +9,7 @@
 - PostgreSQL에 저장하는 브라우저 세션, 로그인 시 세션 회전, host/port별 audience, 사용자·관리자 쿠키 분리, HttpOnly·SameSite와 Origin/CSRF 검증
 - 서비스 Bearer 인증, 5분 단회 연결 URL, 웹·게임 양쪽 확인, 접속 세션별 상태 조회, 원자적 연결·취소·재사용 차단
 - UUID별 단조 증가 정책 버전, 최대 60초 lease, 서버별 학교·명부 자격 만료 시 차단, 변경 outbox 기록
-- 봇 전용 링크와 학교 동의로 검증한 Discord 연결, 역할 지급·회수 작업과 재시도. 기존 수동 ID는 참고 정보로만 유지하고 해제는 관리자만 수행
+- 봇 전용 링크와 학교 동의로 검증한 Discord 연결, 학교·현재 회원·누적 학기 역할 및 실명/Minecraft 닉네임의 독립 작업·재시도. 비회원의 유효한 학교 인증도 연결 가능. 기존 수동 ID는 참고 정보로만 유지하고 해제는 관리자만 수행
 - 명시적으로 켜는 합성 개발 회원·비회원. `NODE_ENV=production`에서는 개발 인증 시작 자체를 거부
 - 학교 공식 로그인 → 브라우저에 묶인 단회 콜백 → SAP 토큰 교환 → 학교 학번 대조, HMAC 신원 매칭과 세션 회전
 - Google Sheets 읽기 전용 어댑터, 원자적 명부 snapshot 반영, 60초 자동 동기화와 15분 freshness, 위험 변경 digest 승인
@@ -58,6 +58,6 @@ docker build -t passport-api:local .
 
 이미지는 비특권 사용자로 실행하며 `/healthz`에서 DB 연결을 확인합니다. 스키마 적용과 fixture 생성은 서버 시작에 자동으로 포함하지 않습니다. 의존성은 lockfile로 고정합니다. Prisma CLI의 `deepmerge-ts` 간접 의존성은 보안 수정 버전 8.0.0으로 재정의했고 생성·migration·빌드를 검증했습니다.
 
-[실행 API와 환경 변수](docs/runtime-api.md) · [개인정보와 스킨](docs/privacy-and-skins.md) · [Discord 봇 연동](docs/discord-integration.md) · [서버 발견과 설정](docs/server-registry.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
+[실행 API와 환경 변수](docs/runtime-api.md) · [개인정보와 스킨](docs/privacy-and-skins.md) · [Discord 봇 연동](docs/discord-integration.md) · [Discord 관리 v2](docs/discord-v2.md) · [서버 발견과 설정](docs/server-registry.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
 
 공개 저장소의 CI·빌드는 비공개 계약 저장소 없이 독립적으로 동작합니다. 현재 Minecraft 응답 계약 식별자는 `0.1.0-draft`입니다.

@@ -10,7 +10,6 @@ const {hash,csrf}=require('../dist/security'),{privacyNotice}=require('../dist/p
 const {universityAdapter}=require('../dist/university-auth');
 const {studentKey}=require('../dist/integrations/sheets');
 const {applyRosterSnapshot}=require('../dist/membership-sync');
-const {discordEntitlement}=require('../dist/discord-policy');
 const PORTAL='portal.example.test',ADMIN='admin.example.test',guildId=process.env.DISCORD_GUILD_ID;
 const consent={accepted:true,version:privacyNotice.version};
 let app,http,p,db,member,other,admin,originalVerify;
@@ -53,21 +52,20 @@ test('Discord inspection requires browser binding, CSRF, exact token and a live 
  const seen=await browser(request(http).post(`${path(link)}/inspect`),member).send({token:link.token}).expect(200);assert.equal(seen.body.discordId,userId);assert.equal(seen.body.displayName,'Synthetic Member');assert.equal(seen.body.subjectId,undefined);
  await db.discordLinkSession.update({where:{id:link.id},data:{expiresAt:new Date(0)}});await browser(request(http).post(`${path(link)}/inspect`),member).send({token:link.token}).expect(410);
 });
-test('Discord linking requires explicit current consent and valid active school membership',async()=>{
+test('Discord linking requires explicit current consent and valid non-suspended school authentication',async()=>{
  const link=await createLink();const send=body=>browser(request(http).post(`${path(link)}/web-confirm`),member).send(body);
  assert.equal((await send({token:link.token}).expect(400)).body.code,'consent_required');
  await send({token:link.token,consent:{accepted:true,version:'old'}}).expect(409);
- for(const change of [{membershipStatus:'inactive'},{membershipStatus:'active',accessSuspended:true},{accessSuspended:false,universityVerifiedUntil:new Date(0)}]){await db.subject.update({where:{id:member.subjectId},data:change});assert.equal((await send({token:link.token,consent}).expect(403)).body.code,'membership_required');}
+ for(const change of [{membershipStatus:'suspended'},{membershipStatus:'active',accessSuspended:true},{accessSuspended:false,universityVerifiedUntil:new Date(0)}]){await db.subject.update({where:{id:member.subjectId},data:change});assert.equal((await send({token:link.token,consent}).expect(403)).body.code,'school_verification_required');}
  assert.equal(await db.discordIdentity.count(),0);assert.equal(await db.consentReceipt.count(),0);
 });
-test('university Minecraft access never grants a nonmember Discord membership role',async()=>{
+test('nonmembers may verify school identity without acquiring a membership role',async()=>{
  await db.serverRecord.create({data:{id:'campus_discord_test',label:'Synthetic university server',enabled:true,accessMode:'university'}});
  try {
   await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'inactive',verifiedUntil:new Date(0)}});
   const allowed=(await browser(request(http).get('/v1/me/servers'),member,false).expect(200)).body.servers;
   assert.deepEqual(allowed.map(row=>row.id),['campus_discord_test']);
-  const link=await createLink();const rejected=await browser(request(http).post(`${path(link)}/web-confirm`),member).send({token:link.token,consent}).expect(403);
-  assert.equal(rejected.body.code,'membership_required');assert.equal(await db.discordIdentity.count(),0);assert.equal(await db.discordRoleState.count(),0);
+  await confirm(await createLink());const roles=await db.discordRoleState.findMany();assert.equal(roles.length,1);assert.equal(roles[0].kind,'verification');assert.equal(roles[0].desired,true);
  } finally {await db.serverRecord.delete({where:{id:'campus_discord_test'}});}
 });
 test('Discord completion is one-to-one and atomic with current consent, audit and durable role intent',async()=>{
@@ -100,11 +98,11 @@ test('Suspension fences an in-flight grant without stealing its lease and ignore
  let row=await db.discordRoleState.findUnique({where:{id:job.id}});assert.equal(row.desired,false);assert.equal(row.version,2n);assert.equal(row.leaseHash,hash(job.leaseToken));assert.deepEqual(await claim(),[]);
  await ack(job).expect(409);const [revoke]=await claim();assert.equal(revoke.desired,false);assert.equal(revoke.version,'2');await ack(revoke).expect(204);assert.equal((await profile()).discordConnection.roleStatus,'revoked');
 });
-test('Membership snapshot changes and natural expiry revoke roles; late grant acknowledgements are rejected',async()=>{
+test('Roster loss preserves school verification, while school expiry rejects late grants and revokes',async()=>{
  await confirm(await createLink());let [job]=await claim();await ack(job).expect(204);
  const options={allowedServerIds:['lobby']};await applyRosterSnapshot(db,{entries:[{studentKey:studentKey('99990001',p.config.matchingSecret),status:'inactive',roleLabel:'',serverIds:[]}],sourceKey:'c'.repeat(64),fetchedAt:new Date()},options);
- [job]=await claim();assert.equal(job.desired,false);await ack(job).expect(204);
- await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'active',verifiedUntil:new Date(Date.now()+60000)}});await makeDue();[job]=await claim();assert.equal(job.desired,true);
+ await makeDue();[job]=await claim();assert.equal(job.desired,true);await ack(job).expect(204);
+ await makeDue();[job]=await claim();assert.equal(job.desired,true);
  await db.subject.update({where:{id:member.subjectId},data:{universityVerifiedUntil:new Date(0)}});await ack(job).expect(409);[job]=await claim();assert.equal(job.desired,false);await ack(job,'member_absent').expect(204);
  assert.equal((await profile()).discordConnection.roleStatus,'revoked');
 });

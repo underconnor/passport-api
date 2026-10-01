@@ -56,6 +56,14 @@ function checkedText(value: string, max: number): string {
   if (!normalized || normalized.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f<>]/u.test(normalized)) throw new UniversityVerificationError('parser_changed');
   return normalized;
 }
+export function universityName(value: string, requireGreeting = true): string {
+  const text = checkedText(value, 120);
+  const greeting = text.match(/^(.+?)님(?: 환영합니다\.)?$/u);
+  if (requireGreeting && !greeting) throw new UniversityVerificationError('parser_changed');
+  const name = checkedText(greeting ? greeting[1]! : text, 80);
+  if (!/^[\p{L}\p{M}][\p{L}\p{M} .'’·-]*$/u.test(name) || /님\s|환영합니다/u.test(name)) throw new UniversityVerificationError('parser_changed');
+  return name;
+}
 function academicStatus(label: string): AcademicStatus {
   const status = label.match(/(?:^|\s)(재학|휴학|졸업|수료|자퇴|제적)$/u)?.[1];
   switch (status) {
@@ -78,7 +86,7 @@ export function parseStudentPortal(html: string, expectedStudentNumber: string, 
   if (nameBoxes.length !== 1 || infoBoxes.length !== 1) throw new UniversityVerificationError('parser_changed');
   const nameNode = nameBoxes.first().find('span').first();
   if (!nameNode.length) throw new UniversityVerificationError('parser_changed');
-  const name = checkedText(nameNode.text().replace(/님\s*$/u, ''), 80);
+  const name = universityName(nameNode.text());
   const values = new Map<string, string>();
   const wanted = new Set(['학번', '소속', '과정/학기']);
   for (const item of infoBoxes.first().find('li').toArray()) {

@@ -12,6 +12,8 @@ import { UniversityVerificationError } from './integrations/usaint';
 import { adminServers, heartbeatServers, setServerSettings } from './registry';
 import { privacyNotice } from './privacy';
 import { ackDiscordRole, claimDiscordRoles, createDiscordLink, inspectDiscordLink, unlinkDiscord, webConfirmDiscord } from './discord';
+import { discordSettingsSchema, discordReconcileSchema, discordV2ClaimSchema, discordV2RoleAckSchema, discordNicknameAckSchema, discordConsentSchema } from './security';
+import { adminDiscord, updateDiscordSettings, reconcileDiscord, renewDiscordConsent, discordBotConfig, claimDiscordV2, ackDiscordNickname } from './discord-management';
 
 @Controller()
 class PassportController {
@@ -45,6 +47,15 @@ class PassportController {
   @Post('v1/discord/roles/claim') @HttpCode(200) discordClaim(@Req() req: Request, @Body() body: unknown) { return claimDiscordRoles(this.passport, req, parse(discordRoleClaimSchema, body)); }
   @Post('v1/discord/roles/:id/ack') @HttpCode(204) discordAck(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return ackDiscordRole(this.passport, req, parse(uuidSchema, id), parse(discordRoleAckSchema, body)); }
   @Delete('v1/admin/members/:id/discord') discordUnlink(@Req() req: Request, @Param('id') id: string) { return unlinkDiscord(this.passport, req, parse(uuidSchema, id)); }
+  @Get('v1/admin/discord') discordSettings(@Req() req: Request) { return adminDiscord(this.passport, req); }
+  @Put('v1/admin/discord') putDiscordSettings(@Req() req: Request, @Body() body: unknown) { return updateDiscordSettings(this.passport, req, parse(discordSettingsSchema, body)); }
+  @Post('v1/admin/discord/reconcile') @HttpCode(200) discordReconcile(@Req() req: Request, @Body() body: unknown) { return reconcileDiscord(this.passport, req, parse(discordReconcileSchema, body).expectedRevision); }
+  @Post('v1/me/discord/consent') @HttpCode(200) discordConsent(@Req() req: Request, @Body() body: unknown) { return renewDiscordConsent(this.passport, req, parse(discordConsentSchema, body).consent); }
+  @Get('v2/discord/config') discordConfigV2(@Req() req: Request) { return discordBotConfig(this.passport, req); }
+  @Post('v2/discord/roles/claim') @HttpCode(200) discordRoleClaimV2(@Req() req: Request, @Body() body: unknown) { return claimDiscordV2(this.passport, req, parse(discordV2ClaimSchema, body), false); }
+  @Post('v2/discord/nicknames/claim') @HttpCode(200) discordNicknameClaim(@Req() req: Request, @Body() body: unknown) { return claimDiscordV2(this.passport, req, parse(discordV2ClaimSchema, body), true); }
+  @Post('v2/discord/roles/:id/ack') @HttpCode(204) discordRoleAckV2(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return ackDiscordRole(this.passport, req, parse(uuidSchema, id), parse(discordV2RoleAckSchema, body), true); }
+  @Post('v2/discord/nicknames/:id/ack') @HttpCode(204) discordNicknameAck(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return ackDiscordNickname(this.passport, req, parse(uuidSchema, id), parse(discordNicknameAckSchema, body)); }
   @Post('v1/link-sessions') createLink(@Req() req: Request, @Body() body: unknown) { return this.passport.createLink(req, parse(createLinkSchema, body)); }
   @Post('v1/link-sessions/:id/inspect') @HttpCode(200) inspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectLink(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
   @Post('v1/link-sessions/:id/skin') @HttpCode(200) linkSkin(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.linkMinecraftSkin(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }

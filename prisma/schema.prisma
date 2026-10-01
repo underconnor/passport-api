@@ -32,6 +32,7 @@ model Subject {
   consents ConsentReceipt[]
   discordIdentity DiscordIdentity?
   discordLinks DiscordLinkSession[]
+  membershipSemesters MembershipSemester[]
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -174,6 +175,7 @@ model DiscordIdentity {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   roles DiscordRoleState[]
+  nicknames DiscordNicknameState[]
 }
 model DiscordLinkSession {
   id String @id @default(uuid()) @db.Uuid
@@ -198,6 +200,8 @@ model DiscordRoleState {
   identity DiscordIdentity @relation(fields: [discordUserId], references: [discordUserId], onDelete: Cascade)
   guildId String
   roleId String
+  kind String @default("verification")
+  semester String?
   desired Boolean
   version BigInt @default(1)
   validUntil DateTime?
@@ -214,4 +218,52 @@ model DiscordRoleState {
   @@unique([discordUserId, guildId, roleId])
   @@index([nextAttemptAt, leaseUntil])
   @@index([desired, validUntil])
+}
+model DiscordGuildSettings {
+  guildId String @id
+  verificationRoleId String
+  memberRoleId String?
+  currentSemester String?
+  nicknameEnabled Boolean @default(false)
+  revision BigInt @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  semesterRoles DiscordSemesterRole[]
+}
+model DiscordSemesterRole {
+  guildId String
+  settings DiscordGuildSettings @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+  semester String
+  roleId String
+  @@id([guildId, semester])
+  @@unique([guildId, roleId])
+}
+model MembershipSemester {
+  subjectId String @db.Uuid
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  guildId String
+  semester String
+  recordedAt DateTime @default(now())
+  @@id([subjectId, guildId, semester])
+}
+model DiscordNicknameState {
+  id String @id @default(uuid()) @db.Uuid
+  discordUserId String
+  identity DiscordIdentity @relation(fields: [discordUserId], references: [discordUserId], onDelete: Cascade)
+  guildId String
+  nickname String?
+  version BigInt @default(1)
+  validUntil DateTime?
+  appliedNickname String?
+  appliedVersion BigInt?
+  appliedAt DateTime?
+  nextAttemptAt DateTime @default(now())
+  attempts Int @default(0)
+  lastError String?
+  leaseHash String?
+  leaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([discordUserId, guildId])
+  @@index([nextAttemptAt, leaseUntil])
 }

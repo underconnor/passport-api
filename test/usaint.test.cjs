@@ -41,6 +41,11 @@ test('portal parser reads the school-rendered identifier and minimum identity fi
   assert.deepEqual(identity, { provider: 'ssu-usaint', studentNumber: callback.sIdno, name: '파서검증', department: '소프트웨어학부', academicStatus: 'ENROLLED', courseLabel: '학사과정 재학', parserVersion: 'ssu-main-student-v1', verifiedAt });
   assert.ok(!JSON.stringify(identity).includes('not-collected'));
 });
+test('student names remove only known anchored honorific and welcome suffixes',()=>{
+ for(const name of ['김학생님','김학생님 환영합니다.','  김학생님\n 환영합니다.  '])assert.equal(parseStudentPortal(fixture({name}),callback.sIdno).name,'김학생');
+ assert.equal(parseStudentPortal(fixture({name:'Alex Kim님 환영합니다.'}),callback.sIdno).name,'Alex Kim');
+ for(const name of ['김학생님 반갑습니다.','김학생님 환영합니다. 추가 안내','김학생님 환영합니다. 박학생님','님 환영합니다.','김학생 / 다른학생님','김학생'])assert.throws(()=>parseStudentPortal(fixture({name}),callback.sIdno),assertCode('parser_changed'));
+});
 test('parser permits other departments and preserves unknown academic labels without inventing status', () => {
   assert.equal(parseStudentPortal(fixture({ department: '철학과', status: '새과정 확인필요' }), callback.sIdno).academicStatus, 'UNKNOWN');
   for (const [label, expected] of [['휴학', 'LEAVE_OF_ABSENCE'], ['졸업', 'GRADUATED'], ['수료', 'COMPLETED'], ['자퇴', 'WITHDRAWN'], ['제적', 'WITHDRAWN']]) {

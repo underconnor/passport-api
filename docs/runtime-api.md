@@ -93,3 +93,5 @@ DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [
 ## Discord 봇
 
 [검증된 연결·역할 큐·별도 서비스 권한](discord-integration.md)을 참조합니다. `/v1/auth/session`에 `features:{discordLinking:boolean}`, `/me`와 관리자 회원 목록에 `discordConnection`이 추가됩니다. 기존 사용자 수동 Discord PUT/DELETE는403 `discord_admin_contact_required`이며 관리자가 해제합니다.
+
+Discord 역할·닉네임 v2와 관리자 설정·수동 재조정, 현재 동의 갱신의 DTO는 [Discord 관리 v2](discord-v2.md)를 따른다. `/v2/discord/*`도 별도 봇 Bearer가 필요하며 웹 reverse proxy가 해당 prefix를 API로 전달해야 한다. 비회원은 유효 학교 인증·비정지로 학교 역할을 받을 수 있지만 현재 회원 역할은 활성 명부·TTL을 추가 요구한다. Minecraft의 서버별 자격 계산은 이 변경으로 넓히지 않는다.

@@ -21,6 +21,13 @@ const discordNameSchema = z.string().trim().min(1).max(80).refine(value => !/[\x
 export const createDiscordLinkSchema = z.object({ discordUserId: snowflakeSchema, guildId: snowflakeSchema, discordUsername: discordNameSchema, discordDisplayName: discordNameSchema.optional(), interactionId: snowflakeSchema }).strict();
 export const discordRoleClaimSchema = z.object({ guildId: snowflakeSchema, limit: z.number().int().min(1).max(20) }).strict();
 export const discordRoleAckSchema = z.object({ leaseToken: linkTokenSchema.shape.token, version: z.string().regex(/^[1-9][0-9]{0,18}$/).refine(value => BigInt(value) <= 9223372036854775807n), outcome: z.enum(['applied','retry','member_absent','configuration_error']) }).strict();
+const discordSemesterSchema = z.string().regex(/^\d{2}-[12]$/);
+export const discordSettingsSchema = z.object({ memberRoleId: snowflakeSchema.nullable(), currentSemester: discordSemesterSchema.nullable(), semesterRoles: z.array(z.object({ semester: discordSemesterSchema, roleId: snowflakeSchema }).strict()).max(40).refine(rows => new Set(rows.map(r => r.semester)).size === rows.length), nicknameEnabled: z.boolean(), expectedRevision: discordRoleAckSchema.shape.version }).strict();
+export const discordReconcileSchema = z.object({ expectedRevision: discordRoleAckSchema.shape.version }).strict();
+export const discordV2ClaimSchema = discordRoleClaimSchema.extend({ contractVersion: z.literal(2), settingsRevision: discordRoleAckSchema.shape.version }).strict();
+export const discordV2RoleAckSchema = discordRoleAckSchema.extend({ contractVersion: z.literal(2) }).strict();
+export const discordNicknameAckSchema = discordRoleAckSchema.extend({ contractVersion: z.literal(2), outcome: z.enum(['applied','retry','member_absent','configuration_error','not_manageable']) }).strict();
+export const discordConsentSchema = z.object({ consent: consentSchema }).strict();
 export const universityCallbackSchema = z.object({ sToken: z.string().min(16).max(8192), sIdno: z.string().regex(/^\d{8,10}$/) });
 export const enrollmentSchema = z.object({ bootstrapToken: z.string().min(43).max(128) }).strict();
 export const mfaSchema = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();

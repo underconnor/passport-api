@@ -4,7 +4,7 @@ import type { Request } from 'express';
 import type { PassportService } from './passport.service';
 import { adminContext } from './admin';
 import { policyTransaction } from './database';
-import { discordEntitlement, refreshDiscordRole } from './discord-policy';
+import { discordEntitlement, projectDiscordIdentity, refreshDiscordRole } from './discord-policy';
 import { equal, hash, opaqueToken } from './security';
 import { ConsentInput, recordConsent, requireConsent } from './privacy';
 
@@ -65,12 +65,12 @@ export async function inspectDiscordLink(p: PassportService, req: Request, id: s
 
 async function confirmDiscordLinkInTransaction(p: PassportService, tx: Prisma.TransactionClient, id: string, token: string, subjectId: string, webSessionId: string, consent: { version: string; acceptedAt: Date }) {
   const link = discordLinkState(await tx.discordLinkSession.findUnique({ where: { id } }), token, true);
-  const config = configuredGuild(p, link.guildId);
+  configuredGuild(p, link.guildId);
   const session = await tx.webSession.findUnique({ where: { id: webSessionId } });
   if (!session || session.subjectId !== subjectId || session.expiresAt <= new Date()) throw new UnauthorizedException({ code: 'confirming_session_expired' });
   const subject = await tx.subject.findUnique({ where: { id: subjectId } });
   const entitlement = discordEntitlement(subject);
-  if (!entitlement.desired) throw new ForbiddenException({ code: 'membership_required' });
+  if (!entitlement.desired) throw new ForbiddenException({ code: 'school_verification_required' });
   const existingUser = await tx.discordIdentity.findUnique({ where: { discordUserId: link.discordUserId } });
   const existingSubject = await tx.discordIdentity.findUnique({ where: { subjectId } });
   if (existingUser?.subjectId || existingSubject) throw new ConflictException({ code: 'discord_already_linked' });
@@ -78,7 +78,7 @@ async function confirmDiscordLinkInTransaction(p: PassportService, tx: Prisma.Tr
   await recordConsent(tx, subjectId, 'discord_link', id, consent);
   const data = { guildId: link.guildId, username: link.username, displayName: link.displayName, subjectId, verifiedAt: now };
   await tx.discordIdentity.upsert({ where: { discordUserId: link.discordUserId }, create: { discordUserId: link.discordUserId, ...data }, update: data });
-  await tx.discordRoleState.upsert({ where: { discordUserId_guildId_roleId: { discordUserId: link.discordUserId, guildId: link.guildId, roleId: config.roleId } }, create: { discordUserId: link.discordUserId, guildId: link.guildId, roleId: config.roleId, ...entitlement }, update: { ...entitlement, version: { increment: 1 }, nextAttemptAt: now, attempts: 0, lastError: null } });
+  await projectDiscordIdentity(tx, link.discordUserId, now);
   const completed = await tx.discordLinkSession.update({ where: { id }, data: { status: 'linked', subjectId, completedAt: now } });
   await tx.auditEvent.create({ data: { action: 'discord.linked', subjectId, objectId: link.id } });
   return summary(completed);
@@ -100,7 +100,7 @@ export async function unlinkDiscord(p: PassportService, req: Request, subjectId:
     const identity = await tx.discordIdentity.findUnique({ where: { subjectId }, include: { roles: true } });
     if (identity) {
       await tx.discordIdentity.update({ where: { discordUserId: identity.discordUserId }, data: { subjectId: null } });
-      for (const role of identity.roles) await refreshDiscordRole(tx, role, null);
+      await projectDiscordIdentity(tx, identity.discordUserId);
       await tx.discordLinkSession.updateMany({ where: { discordUserId: identity.discordUserId, status: 'pending' }, data: { status: 'cancelled' } });
     }
     await tx.subject.update({ where: { id: subjectId }, data: { discordId: null, discordUpdatedAt: null } });
@@ -110,10 +110,10 @@ export async function unlinkDiscord(p: PassportService, req: Request, subjectId:
 }
 
 export async function claimDiscordRoles(p: PassportService, req: Request, input: { guildId: string; limit: number }) {
-  discordService(p, req); configuredGuild(p, input.guildId);
+  const config = discordService(p, req); configuredGuild(p, input.guildId);
   return policyTransaction(p.db, async tx => {
     const now = new Date();
-    const candidates = await tx.discordRoleState.findMany({ where: { guildId: input.guildId, AND: [ { OR: [{ nextAttemptAt: { lte: now } }, { desired: true, validUntil: { lte: now } }] }, { OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }] } ] }, orderBy: { nextAttemptAt: 'asc' }, take: input.limit, include: { identity: { include: { subject: true } } } });
+    const candidates = await tx.discordRoleState.findMany({ where: { guildId: input.guildId, roleId: config.roleId, kind: 'verification', AND: [ { OR: [{ nextAttemptAt: { lte: now } }, { desired: true, validUntil: { lte: now } }] }, { OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }] } ] }, orderBy: { nextAttemptAt: 'asc' }, take: input.limit, include: { identity: { include: { subject: true } } } });
     const jobs = [];
     for (const candidate of candidates) {
       const role = await refreshDiscordRole(tx, candidate, candidate.identity.subject, now);
@@ -126,11 +126,11 @@ export async function claimDiscordRoles(p: PassportService, req: Request, input:
   });
 }
 
-export async function ackDiscordRole(p: PassportService, req: Request, id: string, input: { leaseToken: string; version: string; outcome: 'applied' | 'retry' | 'member_absent' | 'configuration_error' }) {
+export async function ackDiscordRole(p: PassportService, req: Request, id: string, input: { leaseToken: string; version: string; outcome: 'applied' | 'retry' | 'member_absent' | 'configuration_error' }, v2 = false) {
   const config = discordService(p, req);
   const result = await policyTransaction(p.db, async tx => {
     const current = await tx.discordRoleState.findUnique({ where: { id }, include: { identity: { include: { subject: true } } } });
-    if (!current || current.guildId !== config.guildId) throw new NotFoundException({ code: 'discord_role_not_found' });
+    if (!current || current.guildId !== config.guildId || (!v2 && (current.roleId !== config.roleId || current.kind !== 'verification'))) throw new NotFoundException({ code: 'discord_role_not_found' });
     const now = new Date();
     if (!current.leaseHash || !equal(current.leaseHash, hash(input.leaseToken)) || !current.leaseUntil || current.leaseUntil <= now) return false;
     const role = await refreshDiscordRole(tx, current, current.identity.subject, now);

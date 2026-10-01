@@ -49,3 +49,18 @@ test('mass revocation requires review and matching secret scopes the identifier'
  assert.throws(()=>validateSnapshotChange(old,next),/manual review/);
  assert.notEqual(studentKey('99990001',rosterConfig.matchingSecret),studentKey('99990001','another-secret-'.repeat(3)));
 });
+const {discordEntitlement,discordMemberEntitlement,discordNickname}=require('../dist/discord-policy');
+test('Discord school verification and current membership have separate expiry and suspension gates',()=>{
+ const now=new Date('2026-10-01T00:00:00Z'),school=new Date(now.getTime()+3600000),roster=new Date(now.getTime()+60000);
+ const subject={identityProvider:'usaint',membershipStatus:'active',accessSuspended:false,universityVerifiedUntil:school,verifiedUntil:roster};
+ assert.deepEqual(discordEntitlement({...subject,membershipStatus:'inactive',verifiedUntil:new Date(0)},now),{desired:true,validUntil:school});
+ assert.deepEqual(discordMemberEntitlement(subject,now),{desired:true,validUntil:roster});
+ for(const change of [{membershipStatus:'suspended'},{accessSuspended:true},{universityVerifiedUntil:new Date(0)},{identityProvider:'development'}])assert.equal(discordEntitlement({...subject,...change},now).desired,false);
+ assert.equal(discordMemberEntitlement({...subject,membershipStatus:'inactive'},now).desired,false);
+});
+test('Discord nicknames normalize only known school greetings and preserve bounded legacy Minecraft names',()=>{
+ for(const name of ['김학생','김학생님','김학생님 환영합니다.'])assert.equal(discordNickname(name,'A'),'김학생 / A');
+ assert.equal(discordNickname('Synthetic','Ab'),'Synthetic / Ab');assert.equal(discordNickname('Synthetic','invalid/name'),'Synthetic');
+ assert.equal(discordNickname('김학생님 환영합니다. 공지사항','Test'),null);
+ const long=discordNickname('가'.repeat(40),'SixteenCharName1');assert.equal(Array.from(long).length,32);assert.ok(long.endsWith(' / SixteenCharName1'));
+});

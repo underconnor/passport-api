@@ -9,7 +9,8 @@ import { startMembershipSync } from './membership-sync';
 import { permittedServers, seedServerRegistry, ScopeSubject } from './registry';
 import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
 import { minecraftSkin } from './integrations/minecraft-skin';
-import { discordConnection } from './discord-policy';
+import { discordProfile, refreshDiscordSubject } from './discord-policy';
+import { seedDiscordSettings } from './discord-management';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -22,6 +23,7 @@ export class PassportService {
   async onModuleInit() {
     await this.db.$connect();
     await seedServerRegistry(this.db, this.config.servers);
+    await seedDiscordSettings(this.db, this.config.discord);
     this.membership = startMembershipSync(this.db);
     this.cleanupTimer = setInterval(() => { void this.cleanup().catch(() => {}); }, 60000);
     this.cleanupTimer.unref();
@@ -104,7 +106,7 @@ export class PassportService {
   }
   async profile(subject: Subject, token: string) {
     const [minecraft, consent, discord] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } }), this.db.discordIdentity.findUnique({ where: { subjectId: subject.id }, include: { roles: true } })]);
-    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.membershipAccessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: discordConnection(discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.membershipAccessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: await discordProfile(this.db, discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
   async myMinecraftSkin(req: Request) {
@@ -202,6 +204,7 @@ export class PassportService {
     const updated = await tx.minecraftIdentity.updateMany({ where: { uuid: link.minecraftUuid, subjectId: null }, data: { subjectId: subject.id, policyVersion: { increment: 1 }, policyFingerprint: '' } });
     if (updated.count !== 1) throw new ConflictException({ code: 'minecraft_already_linked' });
     const identity = await tx.minecraftIdentity.findUniqueOrThrow({ where: { uuid: link.minecraftUuid } });
+    await refreshDiscordSubject(tx, subject.id);
     await tx.policyEvent.create({ data: { minecraftUuid: identity.uuid, policyVersion: identity.policyVersion } });
     await tx.auditEvent.create({ data: { action: 'minecraft.linked', subjectId: subject.id, objectId: link.id } });
     return tx.linkSession.update({ where: { id: link.id }, data: { status: 'linked', completedAt: new Date() } });

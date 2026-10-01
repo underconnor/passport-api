@@ -70,8 +70,8 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
       const now = new Date();
       const data = { displayName: identity.name, identityProvider: 'usaint', department: identity.department, academicStatus: identity.academicStatus, universityVerifiedAt: now, universityVerifiedUntil: new Date(now.getTime() + 180 * 86_400_000), ...membership };
       const subject = await tx.subject.upsert({ where: { universityKey: key }, create: { universityKey: key, ...data }, update: data });
-      await refreshDiscordSubject(tx, subject.id, now);
       if (portal) await recordConsent(tx, subject.id, 'portal_login', attempt.id, { version: current.consentVersion!, acceptedAt: current.consentAcceptedAt! });
+      await refreshDiscordSubject(tx, subject.id, now);
       const minecraft = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
       if (minecraft) {
         const changed = await tx.minecraftIdentity.update({ where: { uuid: minecraft.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
@@ -100,7 +100,7 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
         });
       } catch (error) {
         const code = error instanceof HttpException ? (error.getResponse() as { code?: string }).code : undefined;
-        const safe = new Set(['link_expired', 'link_consumed', 'link_not_found', 'web_confirmation_consumed', 'membership_required', 'subject_already_linked', 'confirming_session_expired', 'consent_version_mismatch', 'discord_link_expired', 'discord_link_consumed', 'discord_link_not_found', 'discord_already_linked', 'discord_guild_mismatch']);
+        const safe = new Set(['link_expired', 'link_consumed', 'link_not_found', 'web_confirmation_consumed', 'membership_required', 'school_verification_required', 'subject_already_linked', 'confirming_session_expired', 'consent_version_mismatch', 'discord_link_expired', 'discord_link_consumed', 'discord_link_not_found', 'discord_already_linked', 'discord_guild_mismatch']);
         failure = code && safe.has(code) ? code : link.kind === 'discord' ? 'discord_link_confirmation_failed' : 'link_confirmation_failed';
       }
       return `${link.kind === 'discord' ? '/discord' : ''}/link/${encodeURIComponent(link.id)}${failure ? `?${link.kind === 'discord' ? 'discord_link_error' : 'link_error'}=${failure}` : ''}#token=${encodeURIComponent(link.token)}`;
