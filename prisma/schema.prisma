@@ -30,6 +30,8 @@ model Subject {
   links LinkSession[]
   administrator Administrator?
   consents ConsentReceipt[]
+  discordIdentity DiscordIdentity?
+  discordLinks DiscordLinkSession[]
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -160,4 +162,56 @@ model ServerRecord {
   createdAt DateTime @default(now())
   // Heartbeats must not change the optimistic settings revision.
   updatedAt DateTime @default(now())
+}
+model DiscordIdentity {
+  discordUserId String @id
+  guildId String
+  username String
+  displayName String
+  subjectId String? @unique @db.Uuid
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  verifiedAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  roles DiscordRoleState[]
+}
+model DiscordLinkSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  interactionHash String @unique
+  discordUserId String
+  guildId String
+  username String
+  displayName String
+  subjectId String? @db.Uuid
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  status String @default("pending")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@index([discordUserId, guildId, status])
+  @@index([expiresAt])
+}
+model DiscordRoleState {
+  id String @id @default(uuid()) @db.Uuid
+  discordUserId String
+  identity DiscordIdentity @relation(fields: [discordUserId], references: [discordUserId], onDelete: Cascade)
+  guildId String
+  roleId String
+  desired Boolean
+  version BigInt @default(1)
+  validUntil DateTime?
+  appliedDesired Boolean?
+  appliedVersion BigInt?
+  appliedAt DateTime?
+  nextAttemptAt DateTime @default(now())
+  attempts Int @default(0)
+  lastError String?
+  leaseHash String?
+  leaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([discordUserId, guildId, roleId])
+  @@index([nextAttemptAt, leaseUntil])
+  @@index([desired, validUntil])
 }

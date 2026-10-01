@@ -13,8 +13,8 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | GET /v1/me | `{id,displayName,identityProvider,membership:{status,roleLabel,verifiedUntil},minecraft:{uuid,name}\|null,discordReference:{id,verificationStatus:"self_reported",updatedAt}\|null,csrfToken}` |
 | GET /v1/me/servers | `{servers:[{id,label,sensitive?}]}` |
 | GET /v1/me/minecraft-skin | 자신의 연결된 스킨 `{dataUrl,model}`. 상류 장애나 미연결은 null |
-| PUT /v1/me/discord-id | `{id:"123..."}` → 자기신고 reference |
-| DELETE /v1/me/discord-id | 204. 이후 /me의 discordReference는 null |
+| PUT /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
+| DELETE /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
 | POST /v1/link-sessions/:id/inspect | `{token}`. 익명 세션+CSRF 허용. `{id,minecraftName,minecraftUuid,status,expiresAt,webConfirmed,gameConfirmed}` |
 | POST /v1/link-sessions/:id/skin | `{token}`. 세션+CSRF+링크 소유 확인 → `{dataUrl,model}` |
 | POST /v1/link-sessions/:id/web-confirm | `{token,consent:{accepted:true,version}}`. 인증한 회원 세션+CSRF. `{id,status,expiresAt}` |
@@ -89,3 +89,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 DB에 보관하는 발견·활성화·회원 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `admin/overview.servers`는 비활성 서버도 이름을 확인할 수 있도록 `{id,label,sensitive,enabled}` 전체 목록을 제공합니다.
 
 이벤트를 생성할 수 있는 정책 트랜잭션은 `policyTransaction`을 사용합니다. 트랜잭션의 첫 SQL에서 공통 PostgreSQL advisory transaction lock을 획득해 ID 발급과 커밋 순서가 어긋나지 않도록 합니다. 웹·게임 연결 완료, 정책 조회 중 변경 감지, 관리자 접근 제한·연결 해제, 명부 반영, 학교 로그인 완료에 적용합니다. 학교 재로그인 시 기존 Minecraft 연결이 있으면 갱신된 학교 유효기간·이름·명부 정보를 소비자가 다시 읽도록 정책 버전과 이벤트를 함께 갱신합니다. 미연결 첫 로그인은 이벤트를 만들지 않습니다. 일반 인증 준비·MFA·읽기 트랜잭션에는 적용하지 않습니다. 잠금은 커밋·롤백 시 자동 해제됩니다. 앞으로 이벤트 생산 경로를 추가할 때도 같은 wrapper를 사용해야 합니다.
+
+## Discord 봇
+
+[검증된 연결·역할 큐·별도 서비스 권한](discord-integration.md)을 참조합니다. `/v1/auth/session`에 `features:{discordLinking:boolean}`, `/me`와 관리자 회원 목록에 `discordConnection`이 추가됩니다. 기존 사용자 수동 Discord PUT/DELETE는403 `discord_admin_contact_required`이며 관리자가 해제합니다.

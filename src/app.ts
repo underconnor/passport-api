@@ -4,13 +4,14 @@ import { NestFactory } from '@nestjs/core';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import { PassportService } from './passport.service';
-import { accessSchema, createLinkSchema, developmentIdentitySchema, discordSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema, webLinkConfirmSchema } from './security';
+import { accessSchema, createLinkSchema, developmentIdentitySchema, createDiscordLinkSchema, discordRoleClaimSchema, discordRoleAckSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema, webLinkConfirmSchema } from './security';
 import { startUniversity, finishUniversity } from './university-auth';
 import { adminAudit, adminContext, adminMembers, adminOverview, adminStatus, beginEnrollment, setMemberAccess, unlinkMember, verifyAdminMfa } from './admin';
 import { RosterSyncError } from './membership-sync';
 import { UniversityVerificationError } from './integrations/usaint';
 import { adminServers, heartbeatServers, setServerSettings } from './registry';
 import { privacyNotice } from './privacy';
+import { ackDiscordRole, claimDiscordRoles, createDiscordLink, inspectDiscordLink, unlinkDiscord, webConfirmDiscord } from './discord';
 
 @Controller()
 class PassportController {
@@ -36,8 +37,14 @@ class PassportController {
   @Get('v1/me') me(@Req() req: Request) { return this.passport.me(req); }
   @Get('v1/me/minecraft-skin') mySkin(@Req() req: Request) { return this.passport.myMinecraftSkin(req); }
   @Get('v1/me/servers') servers(@Req() req: Request) { return this.passport.myServers(req); }
-  @Put('v1/me/discord-id') discord(@Req() req: Request, @Body() body: unknown) { return this.passport.discord(req, parse(discordSchema, body).id); }
-  @Delete('v1/me/discord-id') @HttpCode(204) async removeDiscord(@Req() req: Request) { await this.passport.discord(req, null); }
+  @Put('v1/me/discord-id') discord(@Req() req: Request, @Body() body: unknown) { return this.passport.discord(req); }
+  @Delete('v1/me/discord-id') @HttpCode(204) async removeDiscord(@Req() req: Request) { await this.passport.discord(req); }
+  @Post('v1/discord/link-sessions') discordLink(@Req() req: Request, @Body() body: unknown) { return createDiscordLink(this.passport, req, parse(createDiscordLinkSchema, body)); }
+  @Post('v1/discord/link-sessions/:id/inspect') @HttpCode(200) discordInspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return inspectDiscordLink(this.passport, req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
+  @Post('v1/discord/link-sessions/:id/web-confirm') @HttpCode(200) discordConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { const input = parse(webLinkConfirmSchema, body); return webConfirmDiscord(this.passport, req, parse(uuidSchema, id), input.token, input.consent); }
+  @Post('v1/discord/roles/claim') @HttpCode(200) discordClaim(@Req() req: Request, @Body() body: unknown) { return claimDiscordRoles(this.passport, req, parse(discordRoleClaimSchema, body)); }
+  @Post('v1/discord/roles/:id/ack') @HttpCode(204) discordAck(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return ackDiscordRole(this.passport, req, parse(uuidSchema, id), parse(discordRoleAckSchema, body)); }
+  @Delete('v1/admin/members/:id/discord') discordUnlink(@Req() req: Request, @Param('id') id: string) { return unlinkDiscord(this.passport, req, parse(uuidSchema, id)); }
   @Post('v1/link-sessions') createLink(@Req() req: Request, @Body() body: unknown) { return this.passport.createLink(req, parse(createLinkSchema, body)); }
   @Post('v1/link-sessions/:id/inspect') @HttpCode(200) inspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectLink(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
   @Post('v1/link-sessions/:id/skin') @HttpCode(200) linkSkin(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.linkMinecraftSkin(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
@@ -77,7 +84,7 @@ export async function createApp() {
   // Bounded single-instance limiter; deployment currently uses one API replica.
   const buckets = new Map<string, { count: number; expires: number }>();
   app.use((req: Request, res: Response, next: NextFunction) => {
-    const limited = req.path.startsWith('/v1/auth/') || req.path === '/v1/admin/mfa' || req.path === '/v1/admin/enrollment' || (req.path === '/v1/link-sessions' && req.method === 'POST');
+    const limited = req.path.startsWith('/v1/auth/') || req.path === '/v1/admin/mfa' || req.path === '/v1/admin/enrollment' || (['/v1/link-sessions','/v1/discord/link-sessions'].includes(req.path) && req.method === 'POST');
     if (!limited) return next();
     const now = Date.now();
     for (const [key, value] of buckets) if (value.expires <= now) buckets.delete(key);

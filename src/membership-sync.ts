@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { policyTransaction, serializable } from './database';
+import { refreshDiscordSubject } from './discord-policy';
 import { readGoogleSheet, RosterEntry, SheetsConfig, sheetsConfig, validateSnapshotChange } from './integrations/sheets';
 
 const currentSnapshotId = 'current';
@@ -73,6 +74,7 @@ export function applyRosterSnapshot(db: PrismaClient, input: RosterSnapshotInput
       const allowedServerIds = membershipStatus === 'active' ? [...entry!.serverIds].sort() : [];
       const changed = subject.membershipStatus !== membershipStatus || subject.roleLabel !== roleLabel || JSON.stringify([...subject.allowedServerIds].sort()) !== JSON.stringify(allowedServerIds) || (membershipStatus === 'active' && subject.verifiedUntil <= now);
       await tx.subject.update({ where: { id: subject.id }, data: { membershipStatus, roleLabel, allowedServerIds, verifiedUntil: expiresAt } });
+      await refreshDiscordSubject(tx, subject.id, now);
       if (changed) {
         await tx.auditEvent.create({ data: { action: 'membership.snapshot_changed', subjectId: subject.id, objectId: preview.digest } });
         if (subject.minecraft) {

@@ -6,6 +6,7 @@ import { policyTransaction, serializable } from './database';
 import { newTotpSecret, verifyTotp } from './totp';
 import { seal, unseal } from './sealed';
 import { permittedServers } from './registry';
+import { discordConnection, refreshDiscordSubject } from './discord-policy';
 
 function adminHost(p: PassportService, req: Request) {
   if (!p.config.adminOrigin || p.host(req) !== new URL(p.config.adminOrigin).host) throw new ForbiddenException({ code: 'admin_host_required' });
@@ -83,9 +84,9 @@ export async function adminOverview(p: PassportService, req: Request) {
 }
 export async function adminMembers(p: PassportService, req: Request, cursor?: string) {
   await adminContext(p, req);
-  const rows = await p.db.subject.findMany({ where: { identityProvider: 'usaint' }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true, identityProvider: true, displayName: true, department: true, membershipStatus: true, roleLabel: true, verifiedUntil: true, universityVerifiedUntil: true, allowedServerIds: true, accessSuspended: true, scopeRestricted: true, scopeLimit: true, discordId: true, minecraft: { select: { uuid: true, name: true } } } });
+  const rows = await p.db.subject.findMany({ where: { identityProvider: 'usaint' }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true, identityProvider: true, displayName: true, department: true, membershipStatus: true, roleLabel: true, verifiedUntil: true, universityVerifiedUntil: true, allowedServerIds: true, accessSuspended: true, scopeRestricted: true, scopeLimit: true, discordId: true, discordIdentity: { include: { roles: true } }, minecraft: { select: { uuid: true, name: true } } } });
   const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
-  return { members: rows.slice(0, 50).map(({ identityProvider, ...subject }) => ({ ...subject, eligibleServerIds: permittedServers(subject, servers, p.accessStatus({ ...subject, identityProvider, accessSuspended: false }) === 'active', false).map(server => server.id) })), nextCursor: rows.length > 50 ? rows[49]!.id : null };
+  return { members: rows.slice(0, 50).map(({ identityProvider, discordIdentity, ...subject }) => ({ ...subject, discordConnection: discordConnection(discordIdentity, p.config.discord), eligibleServerIds: permittedServers(subject, servers, p.accessStatus({ ...subject, identityProvider, accessSuspended: false }) === 'active', false).map(server => server.id) })), nextCursor: rows.length > 50 ? rows[49]!.id : null };
 }
 export async function setMemberAccess(p: PassportService, req: Request, id: string, input: { suspended: boolean; restricted: boolean; serverIds: string[] }) {
   const actor = await adminContext(p, req, true);
@@ -97,6 +98,7 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
     const eligible = permittedServers(current, records, p.accessStatus({ ...current, accessSuspended: false }) === 'active', false).map(server => server.id);
     if (input.serverIds.some(serverId => !eligible.includes(serverId))) throw new ForbiddenException({ code: 'invalid_server_scope' });
     await tx.subject.update({ where: { id }, data: { accessSuspended: input.suspended, scopeRestricted: input.restricted, scopeLimit: input.restricted ? input.serverIds : [] } });
+    await refreshDiscordSubject(tx, id);
     if (current.minecraft) {
       const changed = await tx.minecraftIdentity.update({ where: { uuid: current.minecraft.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
       await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });

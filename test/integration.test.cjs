@@ -135,13 +135,16 @@ test('membership revocation and freshness deny scope and advance policy version'
  await db.subject.update({where:{id:user.profile.id},data:{membershipStatus:'active',verifiedUntil:new Date(Date.now()+30000)}});const short=await getPolicy(link.identity.minecraftUuid);assert.ok(Date.parse(short.expiresAt)-Date.parse(short.issuedAt)<=30000);
  await db.subject.update({where:{id:user.profile.id},data:{verifiedUntil:new Date(Date.now()-1000)}});assert.equal((await getPolicy(link.identity.minecraftUuid)).status,'stale');
 });
-test('self-reported Discord CRUD validates uint64, allows duplicate claims and never grants membership',async()=>{
+test('legacy Discord references remain unverified and user mutations require administrator contact',async()=>{
  const user=await login();const outsider=await login('outsider');
- const result=await browser(request(http).put('/v1/me/discord-id'),user).send({id:'18446744073709551615'}).expect(200);assert.equal(result.body.verificationStatus,'self_reported');
- await browser(request(http).put('/v1/me/discord-id'),user).send({id:'18446744073709551616'}).expect(400);
- await browser(request(http).put('/v1/me/discord-id'),outsider).send({id:'18446744073709551615'}).expect(200);
- const me=await browser(request(http).get('/v1/me'),outsider).expect(200);assert.equal(me.body.membership.status,'inactive');
- await browser(request(http).delete('/v1/me/discord-id'),user).expect(204);assert.equal((await browser(request(http).get('/v1/me'),user).expect(200)).body.discordReference,null);
+ await db.subject.update({where:{id:user.profile.id},data:{discordId:'18446744073709551615',discordUpdatedAt:new Date()}});
+ for(const target of [user,outsider]) {
+  assert.equal((await browser(request(http).put('/v1/me/discord-id'),target).send({id:'18446744073709551615'}).expect(403)).body.code,'discord_admin_contact_required');
+  assert.equal((await browser(request(http).delete('/v1/me/discord-id'),target).expect(403)).body.code,'discord_admin_contact_required');
+ }
+ const me=(await browser(request(http).get('/v1/me'),user).expect(200)).body;
+ assert.equal(me.discordReference.verificationStatus,'self_reported');assert.equal(me.discordConnection,null);
+ assert.equal((await browser(request(http).get('/v1/me'),outsider).expect(200)).body.membership.status,'inactive');
 });
 test('portal and admin cookies coexist on the same hostname, and TTL removes expired sessions',async()=>{
  const user=await login();

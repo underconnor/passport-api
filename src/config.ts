@@ -5,6 +5,7 @@ export interface Config {
   bindHost: string; port: number; servers: ServerDefinition[];
   adminOrigin: string; matchingSecret: string; encryptionKey: string; adminBootstrapToken?: string;
   trustProxyHops: number; adminMfaRequired: boolean;
+  discord?: { serviceToken: string; guildId: string; roleId: string };
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const required = (name: string) => { const v = env[name]; if (!v) throw new Error(`${name} is required`); return v; };
@@ -24,6 +25,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const mfaSetting = env.ADMIN_MFA_REQUIRED ?? 'true';
   if (!['true', 'false'].includes(mfaSetting)) throw new Error('ADMIN_MFA_REQUIRED must be true or false');
   const adminMfaRequired = mfaSetting === 'true';
+  const discordValues = [env.PASSPORT_DISCORD_SERVICE_TOKEN, env.DISCORD_GUILD_ID, env.DISCORD_MEMBER_ROLE_ID];
+  let discord: Config['discord'];
+  if (discordValues.some(Boolean)) {
+    const [discordToken, guildId, roleId] = discordValues;
+    const snowflake = (value?: string) => Boolean(value && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 18446744073709551615n);
+    if (!discordToken || discordToken.length < 32 || [serviceToken, sessionSecret, matchingSecret, adminBootstrapToken].includes(discordToken) || !snowflake(guildId) || !snowflake(roleId) || guildId === roleId) throw new Error('Discord requires a separate service credential and valid guild/member role identifiers');
+    discord = { serviceToken: discordToken, guildId: guildId!, roleId: roleId! };
+  }
   if (authMode === 'university' && (matchingSecret.length < 32 || !/^[0-9a-f]{64}$/i.test(encryptionKey))) throw new Error('University mode requires ROSTER_MATCHING_SECRET and a 32-byte hex DATA_ENCRYPTION_KEY');
   if (adminBootstrapToken && adminBootstrapToken.length < 43) throw new Error('ADMIN_BOOTSTRAP_TOKEN must contain at least 32 random bytes');
   const adminOrigin = env.ADMIN_ORIGIN ? new URL(env.ADMIN_ORIGIN).origin : '';
@@ -34,5 +43,5 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const trustProxyHops = Number(env.TRUST_PROXY_HOPS ?? 0);
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 3) throw new Error('Invalid trusted proxy hop count');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops, adminMfaRequired };
+  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops, adminMfaRequired, discord };
 }

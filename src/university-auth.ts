@@ -4,12 +4,14 @@ import type { PassportService } from './passport.service';
 import { SsuSaintAdapter, buildUniversityLoginUrl } from './integrations/usaint';
 import { studentKey } from './integrations/sheets';
 import { membershipForStudent } from './membership-sync';
-import { hash, opaqueToken, equal, parse, universityLinkContextSchema } from './security';
+import { hash, opaqueToken, equal, parse, universityReturnContextSchema } from './security';
 import { seal, unseal } from './sealed';
 import { policyTransaction, serializable } from './database';
 import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
+import { confirmDiscordLink, discordLinkState } from './discord';
+import { refreshDiscordSubject } from './discord-policy';
 
-export type UniversityStartInput = { link?: { id: string; token: string }; consent?: ConsentInput };
+export type UniversityStartInput = { link?: { id: string; token: string }; discordLink?: { id: string; token: string }; consent?: ConsentInput };
 export const universityAdapter = new SsuSaintAdapter();
 
 export async function startUniversity(p: PassportService, req: Request, input: UniversityStartInput) {
@@ -24,6 +26,12 @@ export async function startUniversity(p: PassportService, req: Request, input: U
     p.ensurePending(link);
     if (!equal(link.tokenHash, hash(input.link.token))) throw new ForbiddenException({ code: 'invalid_link' });
     returnContext = seal(JSON.stringify(input.link), p.config.encryptionKey, 'university-return');
+  }
+  if (input.discordLink) {
+    if (!portal) throw new ForbiddenException({ code: 'invalid_link' });
+    const link = discordLinkState(await p.db.discordLinkSession.findUnique({ where: { id: input.discordLink.id } }), input.discordLink.token, true);
+    if (!p.config.discord || link.guildId !== p.config.discord.guildId) throw new ForbiddenException({ code: 'discord_guild_mismatch' });
+    returnContext = seal(JSON.stringify({ ...input.discordLink, kind: 'discord' }), p.config.encryptionKey, 'university-return');
   }
   const state = opaqueToken();
   await serializable(p.db, async tx => {
@@ -62,6 +70,7 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
       const now = new Date();
       const data = { displayName: identity.name, identityProvider: 'usaint', department: identity.department, academicStatus: identity.academicStatus, universityVerifiedAt: now, universityVerifiedUntil: new Date(now.getTime() + 180 * 86_400_000), ...membership };
       const subject = await tx.subject.upsert({ where: { universityKey: key }, create: { universityKey: key, ...data }, update: data });
+      await refreshDiscordSubject(tx, subject.id, now);
       if (portal) await recordConsent(tx, subject.id, 'portal_login', attempt.id, { version: current.consentVersion!, acceptedAt: current.consentAcceptedAt! });
       const minecraft = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
       if (minecraft) {
@@ -76,21 +85,25 @@ export async function finishUniversity(p: PassportService, req: Request, res: Re
     });
     p.setCookie(req, res, token, 8 * 60 * 60);
     if (attempt.returnContext) {
-      let link: { id: string; token: string };
-      try { link = parse(universityLinkContextSchema, JSON.parse(unseal(attempt.returnContext, p.config.encryptionKey, 'university-return'))); }
+      let link: { id: string; token: string; kind?: 'discord' };
+      try { link = parse(universityReturnContextSchema, JSON.parse(unseal(attempt.returnContext, p.config.encryptionKey, 'university-return'))); }
       catch { return '/?link_error=link_confirmation_failed'; }
       let failure: string | null = null;
       // School login has already committed. A stale or cancelled game attempt
       // rolls back only this second transaction, preserving the new school session.
       try {
         if (!portal || !attempt.consentAcceptedAt || attempt.consentVersion !== privacyNotice.version) throw new ConflictException({ code: 'consent_version_mismatch' });
-        await policyTransaction(p.db, tx => p.confirmWebLink(tx, link.id, link.token, authenticated.subjectId, authenticated.webSessionId, { version: attempt.consentVersion!, acceptedAt: attempt.consentAcceptedAt! }));
+        const consent = { version: attempt.consentVersion!, acceptedAt: attempt.consentAcceptedAt! };
+        await policyTransaction(p.db, async tx => {
+          if (link.kind === 'discord') await confirmDiscordLink(p, tx, link.id, link.token, authenticated.subjectId, authenticated.webSessionId, consent);
+          else await p.confirmWebLink(tx, link.id, link.token, authenticated.subjectId, authenticated.webSessionId, consent);
+        });
       } catch (error) {
         const code = error instanceof HttpException ? (error.getResponse() as { code?: string }).code : undefined;
-        const safe = new Set(['link_expired', 'link_consumed', 'link_not_found', 'web_confirmation_consumed', 'membership_required', 'subject_already_linked', 'confirming_session_expired', 'consent_version_mismatch']);
-        failure = code && safe.has(code) ? code : 'link_confirmation_failed';
+        const safe = new Set(['link_expired', 'link_consumed', 'link_not_found', 'web_confirmation_consumed', 'membership_required', 'subject_already_linked', 'confirming_session_expired', 'consent_version_mismatch', 'discord_link_expired', 'discord_link_consumed', 'discord_link_not_found', 'discord_already_linked', 'discord_guild_mismatch']);
+        failure = code && safe.has(code) ? code : link.kind === 'discord' ? 'discord_link_confirmation_failed' : 'link_confirmation_failed';
       }
-      return `/link/${encodeURIComponent(link.id)}${failure ? `?link_error=${failure}` : ''}#token=${encodeURIComponent(link.token)}`;
+      return `${link.kind === 'discord' ? '/discord' : ''}/link/${encodeURIComponent(link.id)}${failure ? `?${link.kind === 'discord' ? 'discord_link_error' : 'link_error'}=${failure}` : ''}#token=${encodeURIComponent(link.token)}`;
     }
     return '/';
   } catch (error) {

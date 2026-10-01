@@ -9,6 +9,7 @@ import { startMembershipSync } from './membership-sync';
 import { permittedServers, seedServerRegistry } from './registry';
 import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
 import { minecraftSkin } from './integrations/minecraft-skin';
+import { discordConnection } from './discord-policy';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -31,6 +32,7 @@ export class PassportService {
     await this.db.universityAuthRequest.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.consumedUniversityToken.deleteMany({ where: { expiresAt: { lte: now } } });
     await this.db.webSession.deleteMany({ where: { expiresAt: { lte: now } } });
+    await this.db.discordLinkSession.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) } } });
     await this.db.linkSession.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) } } });
     await this.db.policyEvent.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) } } });
     await this.db.auditEvent.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) } } });
@@ -83,7 +85,7 @@ export class PassportService {
       this.setCookie(req, res, token, sessionLifetime / 1000);
       context = { session, token };
     }
-    return { authenticated: Boolean(context.session.subject), csrfToken: csrf(this.config.sessionSecret, context.token), authMode: this.config.authMode };
+    return { authenticated: Boolean(context.session.subject), csrfToken: csrf(this.config.sessionSecret, context.token), authMode: this.config.authMode, features: { discordLinking: Boolean(this.config.discord) } };
   }
   async developmentLogin(req: Request, res: Response, identity: 'member' | 'outsider') {
     if (this.config.authMode !== 'development' || this.config.production) throw new NotFoundException({ code: 'development_auth_disabled' });
@@ -101,8 +103,8 @@ export class PassportService {
     return this.profile(subject, token);
   }
   async profile(subject: Subject, token: string) {
-    const [minecraft, consent] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } })]);
-    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    const [minecraft, consent, discord] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } }), this.db.discordIdentity.findUnique({ where: { subjectId: subject.id }, include: { roles: true } })]);
+    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: discordConnection(discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
   async myMinecraftSkin(req: Request) {
@@ -119,14 +121,9 @@ export class PassportService {
     await this.db.webSession.deleteMany({ where: { id: c.session.id } });
     this.setCookie(req, res, '', 0);
   }
-  async discord(req: Request, id: string | null) {
-    const c = await this.mutation(req);
-    const updated = await serializable(this.db, async tx => {
-      const subject = await tx.subject.update({ where: { id: c.session.subjectId! }, data: { discordId: id, discordUpdatedAt: id ? new Date() : null } });
-      await tx.auditEvent.create({ data: { action: id ? 'discord_reference.set' : 'discord_reference.deleted', subjectId: subject.id } });
-      return subject;
-    });
-    return updated.discordId ? { id: updated.discordId, verificationStatus: 'self_reported', updatedAt: updated.discordUpdatedAt!.toISOString() } : null;
+  async discord(req: Request) {
+    await this.mutation(req);
+    throw new ForbiddenException({ code: 'discord_admin_contact_required' });
   }
   async myServers(req: Request) {
     const c = await this.context(req, true);

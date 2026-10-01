@@ -15,7 +15,7 @@
     "db:migrate": "prisma migrate deploy",
     "db:seed:development": "node dist/seed-development.js",
     "test": "node --test test/unit.test.cjs test/usaint.test.cjs test/sheets-public.test.cjs test/totp.test.cjs test/minecraft-skin.test.cjs",
-    "test:integration": "node scripts/prepare-test-schemas.cjs && node --test --test-concurrency=1 test/integration.test.cjs test/membership-sync.test.cjs test/real-auth.test.cjs test/policy-order.test.cjs test/registry.test.cjs",
+    "test:integration": "node scripts/prepare-test-schemas.cjs && node --test --test-concurrency=1 test/integration.test.cjs test/membership-sync.test.cjs test/real-auth.test.cjs test/policy-order.test.cjs test/registry.test.cjs test/discord.test.cjs",
     "check": "npm run build && npm test",
     "sheets:check": "node dist/sheets-check.js",
     "test:membership": "node --test --test-concurrency=1 test/membership-sync.test.cjs",

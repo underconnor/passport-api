@@ -14,7 +14,13 @@ export const webLinkConfirmSchema = linkTokenSchema.extend({ consent: consentSch
 export const developmentIdentitySchema = z.object({ identity: z.enum(['member', 'outsider']) }).strict();
 export const discordSchema = z.object({ id: z.string().regex(/^[1-9][0-9]{0,19}$/).refine(s => /^[1-9][0-9]{0,19}$/.test(s) && BigInt(s) <= 18446744073709551615n) }).strict();
 export const universityLinkContextSchema = z.object({ id: uuidSchema, token: linkTokenSchema.shape.token }).strict();
-export const universityStartSchema = z.object({ link: universityLinkContextSchema.optional(), consent: consentSchema.optional() }).strict();
+export const universityReturnContextSchema = universityLinkContextSchema.extend({ kind: z.literal('discord').optional() });
+export const universityStartSchema = z.object({ link: universityLinkContextSchema.optional(), discordLink: universityLinkContextSchema.optional(), consent: consentSchema.optional() }).strict().refine(value => !(value.link && value.discordLink));
+const snowflakeSchema = discordSchema.shape.id;
+const discordNameSchema = z.string().trim().min(1).max(80).refine(value => !/[\x00-\x1f\x7f]/.test(value));
+export const createDiscordLinkSchema = z.object({ discordUserId: snowflakeSchema, guildId: snowflakeSchema, discordUsername: discordNameSchema, discordDisplayName: discordNameSchema.optional(), interactionId: snowflakeSchema }).strict();
+export const discordRoleClaimSchema = z.object({ guildId: snowflakeSchema, limit: z.number().int().min(1).max(20) }).strict();
+export const discordRoleAckSchema = z.object({ leaseToken: linkTokenSchema.shape.token, version: z.string().regex(/^[1-9][0-9]{0,18}$/).refine(value => BigInt(value) <= 9223372036854775807n), outcome: z.enum(['applied','retry','member_absent','configuration_error']) }).strict();
 export const universityCallbackSchema = z.object({ sToken: z.string().min(16).max(8192), sIdno: z.string().regex(/^\d{8,10}$/) });
 export const enrollmentSchema = z.object({ bootstrapToken: z.string().min(43).max(128) }).strict();
 export const mfaSchema = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();
