@@ -269,3 +269,41 @@ test('roster actions require administrator MFA and same-site mutation protection
  await browser(request(http).post('/v1/admin/roster/preview'),user).send({}).expect(403);assert.equal(calls,0);
  await browser(request(http).post('/v1/admin/roster/preview'),user,true).send({}).expect(200);assert.equal(calls,1);
 });
+
+test('full student ID is encrypted after current portal consent and returned only in the authenticated owner profile',async()=>{
+ const owner=await login('99990002');assert.equal(owner.profile.studentId,'99990002');
+ const stored=await db.subject.findUnique({where:{id:owner.profile.id}});
+ assert.ok(stored.studentIdCiphertext);assert.ok(!JSON.stringify(stored).includes('99990002'));
+ const {semesterVerificationExpiry}=require('../dist/school-identity');
+ assert.equal(stored.universityVerifiedUntil.toISOString(),semesterVerificationExpiry(stored.universityVerifiedAt).toISOString());assert.equal(stored.universityExpiryPolicyVersion,1);
+ const other=await login('99990003');assert.equal(other.profile.studentId,'99990003');
+ await request(http).get('/v1/me').set('Host',PORTAL).expect(401);
+ await request(http).get('/v1/me').set('Host',PORTAL).set('Authorization',`Bearer ${service.config.serviceToken}`).expect(401);
+ const admin=await administrator();assert.equal(admin.profile.studentId,null);
+ assert.equal((await db.subject.findUnique({where:{id:admin.profile.id}})).studentIdCiphertext,null);
+ const members=(await browser(request(http).get('/v1/admin/members'),admin).expect(200)).body;
+ assert.ok(!JSON.stringify(members).includes('99990002'));assert.ok(!JSON.stringify(members).includes(stored.studentIdCiphertext));
+ const game=await minecraft(owner.profile.id);assert.ok(!JSON.stringify(await policy(game.uuid)).includes('99990002'));
+ const players=(await serviceRequest(request(http).get('/v1/minecraft/players').query({query:game.name})).expect(200)).body;
+ assert.ok(!JSON.stringify(players).includes('studentId'));assert.ok(!JSON.stringify(players).includes(stored.studentIdCiphertext));
+ const audit=await db.auditEvent.findMany();assert.ok(!JSON.stringify(audit).includes('99990002'));assert.ok(!JSON.stringify(audit).includes(stored.studentIdCiphertext));
+});
+
+test('old identities and consent renewal never synthesize a full student ID; a new verified portal login supplies it',async()=>{
+ const user=await login();await db.subject.update({where:{id:user.profile.id},data:{studentIdCiphertext:null}});
+ await db.consentReceipt.updateMany({where:{subjectId:user.profile.id},data:{version:'2026-10-01.4'}});
+ assert.equal((await browser(request(http).get('/v1/me'),user).expect(200)).body.studentId,null);
+ await browser(request(http).post('/v1/me/privacy/consent'),user,true).send({consent}).expect(200);
+ const renewed=(await browser(request(http).get('/v1/me'),user).expect(200)).body;
+ assert.equal(renewed.studentId,null);assert.equal(renewed.privacyConsent.accepted,true);
+ assert.equal((await db.subject.findUnique({where:{id:user.profile.id}})).studentIdCiphertext,null);
+ assert.equal((await login()).profile.studentId,'99990001');
+});
+
+test('administrator reauthentication does not add full student ID retention without portal consent',async()=>{
+ const admin=await login('99990001',ADMIN);assert.equal(admin.profile.studentId,null);
+ assert.equal(await db.consentReceipt.count({where:{subjectId:admin.profile.id}}),0);
+ const user=await login();const before=await db.subject.findUnique({where:{id:user.profile.id}});
+ await login('99990001',ADMIN);const after=await db.subject.findUnique({where:{id:user.profile.id}});
+ assert.equal(after.studentIdCiphertext,before.studentIdCiphertext);
+});

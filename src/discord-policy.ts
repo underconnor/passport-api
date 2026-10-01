@@ -21,7 +21,7 @@ export function discordNickname(name: string, minecraftName?: string) {
   return real ? `${real}${suffix}` : null;
 }
 export async function managementConsent(tx: Prisma.TransactionClient, subjectId: string) {
-  return Boolean(await tx.consentReceipt.findFirst({ where: { subjectId, version: { in: ['2026-10-01.3', privacyNotice.version] } }, select: { id: true } }));
+  return Boolean(await tx.consentReceipt.findFirst({ where: { subjectId, version: { in: ['2026-10-01.3', '2026-10-01.4', privacyNotice.version] } }, select: { id: true } }));
 }
 async function recordSemester(tx: Prisma.TransactionClient, subject: Subject, settings: DiscordGuildSettings, consent: boolean, now: Date) {
   if (!consent || !settings.currentSemester || subject.identityProvider !== 'usaint' || subject.membershipStatus !== 'active' || subject.verifiedUntil <= now) return;

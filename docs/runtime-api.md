@@ -56,7 +56,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 게임 조회는 서비스 인증과 해당 요청의 UUID·gameSessionId가 모두 일치해야 합니다. 웹 확인 토큰이나 학교 사용자 정보는 반환하지 않습니다. 만료는410, 취소·관리자가 이미 해제한 연결은409입니다. Velocity는 현재 접속 세션에서 `webConfirmed && !gameConfirmed`일 때만 기존 게임 확인을 호출할 수 있습니다. 동시 확인의409는 다음 조회로 해결하며, `linked` 응답을 받더라도 최신 서버 정책을 다시 받아 허용 여부를 판단해야 합니다. 조회 자체는 연결·감사·정책 버전을 변경하지 않습니다.
 
-정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. 여기서 active는 허용 서버가 하나 이상인 게임 권한 상태이며 `/me.membership.effectiveStatus`의 소모임 회원 상태와 구분합니다. 빈 허용 범위는 active로 반환하지 않습니다. lease는 최대60초와 학교 인증 유효기간(로그인 후180일) 중 먼저 만료되는 시점에서 잘리고, 허용 범위에 회원 전용 서버가 있거나 회원 prefix를 내보내면 명부 freshness도 적용합니다. 학교 전체(`university`) 서버만 허용되고 회원 prefix가 없으면 명부 TTL은 사용하지 않습니다. 비회원 또는 명부가 만료된 사용자의 회원 roleLabel은 비웁니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
+정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. 여기서 active는 허용 서버가 하나 이상인 게임 권한 상태이며 `/me.membership.effectiveStatus`의 소모임 회원 상태와 구분합니다. 빈 허용 범위는 active로 반환하지 않습니다. lease는 최대60초와 학교 인증 유효기간(한국 시간 기준 다음 3월 1일 또는 9월 1일 00:00 직전까지) 중 먼저 만료되는 시점에서 잘리고, 허용 범위에 회원 전용 서버가 있거나 회원 prefix를 내보내면 명부 freshness도 적용합니다. 학교 전체(`university`) 서버만 허용되고 회원 prefix가 없으면 명부 TTL은 사용하지 않습니다. 비회원 또는 명부가 만료된 사용자의 회원 roleLabel은 비웁니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
 
 ## 환경 변수
 

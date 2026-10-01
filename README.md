@@ -61,3 +61,5 @@ docker build -t passport-api:local .
 [실행 API와 환경 변수](docs/runtime-api.md) · [개인정보와 스킨](docs/privacy-and-skins.md) · [Discord 봇 연동](docs/discord-integration.md) · [Discord 관리 v2](docs/discord-v2.md) · [서버 발견과 설정](docs/server-registry.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
 
 공개 저장소의 CI·빌드는 비공개 계약 저장소 없이 독립적으로 동작합니다. 현재 Minecraft 응답 계약 식별자는 `0.1.0-draft`입니다.
+
+학교 인증은 한국 시간 기준 다음 3월 1일 또는 9월 1일 직전까지 유효합니다. `.5` 개인정보 동의와 새 학교 로그인 후 본인 계정에서 전체 학번을 확인할 수 있습니다. 저장은 계정별 인증 암호문이며 명부 대조는 HMAC을 유지합니다. [학번 표시·학기 만료 운영 안내](docs/school-identity.md)를 참고하세요.

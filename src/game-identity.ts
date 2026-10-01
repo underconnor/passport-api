@@ -9,7 +9,7 @@ import { refreshDiscordSubject } from './discord-policy';
 import { universityName } from './integrations/usaint';
 
 export async function gameConsent(tx: Prisma.TransactionClient, subjectId: string) {
-  return Boolean(await tx.consentReceipt.findFirst({ where: { subjectId, version: privacyNotice.version }, select: { id: true } }));
+  return Boolean(await tx.consentReceipt.findFirst({ where: { subjectId, version: { in: ['2026-10-01.4', privacyNotice.version] } }, select: { id: true } }));
 }
 export function gameName(name: string) { try { return universityName(name, false); } catch { return ''; } }
 export function schoolActive(subject: Subject, now = new Date()) { return subject.identityProvider === 'usaint' && !subject.accessSuspended && subject.membershipStatus !== 'suspended' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now); }
@@ -21,7 +21,7 @@ export function presenceDto(presence: PlayerPresence | null | undefined, servers
 export async function renewPrivacyConsent(p: PassportService, req: Request, input: ConsentInput) {
   const context = await p.mutation(req), consent = requireConsent(input), subjectId = context.session.subjectId!;
   return policyTransaction(p.db, async tx => {
-    if (!await gameConsent(tx, subjectId)) await recordConsent(tx, subjectId, 'privacy_renewal', randomUUID(), consent);
+    if (!await tx.consentReceipt.findFirst({ where: { subjectId, version: privacyNotice.version }, select: { id: true } })) await recordConsent(tx, subjectId, 'privacy_renewal', randomUUID(), consent);
     await refreshDiscordSubject(tx, subjectId);
     const identity = await tx.minecraftIdentity.findUnique({ where: { subjectId } });
     if (identity) { const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } }); await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } }); }

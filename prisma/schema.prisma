@@ -13,6 +13,8 @@ model Subject {
   department String @default("")
   academicStatus String @default("UNKNOWN")
   admissionYear String? @db.VarChar(2)
+  studentIdCiphertext String?
+  universityExpiryPolicyVersion Int @default(0)
   universityVerifiedAt DateTime?
   universityVerifiedUntil DateTime?
   accessSuspended Boolean @default(false)

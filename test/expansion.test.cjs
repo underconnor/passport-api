@@ -137,3 +137,42 @@ test('web member rows and private statistics expose current presence with per-se
  const adminDetail=(await browser(request(http).get(`/v1/admin/members/${a.owner.id}/stats`)).expect(200)).body;assert.equal(adminDetail.presence.online,true);assert.equal(adminDetail.presence.serverId,'lobby');
  await db.playerPresence.updateMany({data:{expiresAt:new Date(0)}});assert.equal((await browser(request(http).get('/v1/admin/stats')).expect(200)).body.onlinePlayerCount,0);
 });
+
+test('previous .4 game and Discord permissions survive .5 notice, while renewal records .5 exactly once',async()=>{
+ const a=await linked();await db.consentReceipt.updateMany({where:{subjectId:a.owner.id},data:{version:'2026-10-01.4'}});
+ assert.equal((await policy(a.minecraft.uuid)).body.telemetry.enabled,true);assert.equal(await managementConsent(db,a.owner.id),true);
+ const before=(await browser(request(http).get('/v1/me'),a.portal).expect(200)).body;assert.equal(before.privacyConsent.accepted,false);
+ for(let i=0;i<2;i++)await browser(request(http).post('/v1/me/privacy/consent'),a.portal,true).send({consent:{accepted:true,version:privacyNotice.version}}).expect(200);
+ assert.equal(await db.consentReceipt.count({where:{subjectId:a.owner.id,version:privacyNotice.version}}),1);
+ assert.equal((await browser(request(http).get('/v1/me'),a.portal).expect(200)).body.studentId,null);
+});
+
+test('semester expiry migration is idempotent, preserves expired identities and updates game and Discord projections atomically',async()=>{
+ const {migrateSchoolVerificationExpiry}=require('../dist/school-expiry');
+ await db.subject.update({where:{id:admin.subject.id},data:{universityExpiryPolicyVersion:1}});
+ const now=new Date('2026-10-01T10:00:00Z'),verifiedAt=new Date('2026-10-01T00:00:00Z'),old=new Date('2027-03-30T00:00:00Z');
+ const a=await linked({universityVerifiedAt:verifiedAt,universityVerifiedUntil:old});
+ const expired=await subject({universityVerifiedAt:verifiedAt,universityVerifiedUntil:new Date('2026-10-01T01:00:00Z')});
+ const missing=await subject({universityVerifiedAt:verifiedAt,universityVerifiedUntil:null});
+ const stale=await linked({universityVerifiedAt:new Date('2026-08-01T00:00:00Z'),universityVerifiedUntil:new Date('2027-01-28T00:00:00Z')});
+ const discordUserId='200000000000000077';await db.discordIdentity.create({data:{discordUserId,guildId:p.config.discord.guildId,username:'expiry_fixture',subjectId:a.owner.id,verifiedAt}});
+ await policyTransaction(db,tx=>projectDiscordIdentity(tx,discordUserId,now));
+ const dry=await migrateSchoolVerificationExpiry(db,false,now);assert.equal(dry.changed,2);
+ assert.equal((await db.subject.findUnique({where:{id:a.owner.id}})).universityVerifiedUntil.toISOString(),old.toISOString());
+ const first=await migrateSchoolVerificationExpiry(db,true,now);assert.equal(first.changed,2);assert.equal(first.expiredPreserved,1);
+ const after=await db.subject.findUnique({where:{id:a.owner.id}});assert.equal(after.universityVerifiedUntil.toISOString(),'2027-02-28T15:00:00.000Z');assert.equal(after.studentIdCiphertext,null);
+ assert.equal((await db.subject.findUnique({where:{id:expired.id}})).universityVerifiedUntil.toISOString(),'2026-10-01T01:00:00.000Z');
+ assert.equal((await db.subject.findUnique({where:{id:missing.id}})).universityVerifiedUntil,null);
+ assert.equal((await db.subject.findUnique({where:{id:stale.owner.id}})).universityVerifiedUntil.toISOString(),'2026-08-31T15:00:00.000Z');
+ const game=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});assert.equal(game.policyVersion,a.minecraft.policyVersion+1);assert.equal(game.policyFingerprint,'');
+ const event=await db.policyEvent.findFirst({where:{minecraftUuid:game.uuid},orderBy:{id:'desc'}});assert.equal(event.policyVersion,game.policyVersion);
+ const role=await db.discordRoleState.findFirst({where:{discordUserId,kind:'verification'}});assert.equal(role.validUntil.toISOString(),after.universityVerifiedUntil.toISOString());assert.equal(role.desired,true);
+ const events=await db.policyEvent.count();assert.deepEqual(await migrateSchoolVerificationExpiry(db,true,now),{candidates:0,changed:0,marked:0,expiredPreserved:0,applied:true});assert.equal(await db.policyEvent.count(),events);
+});
+
+test('erasing an account removes its encrypted student ID and never puts it in an audit record',async()=>{
+ const {sealStudentId}=require('../dist/school-identity');const key=studentKey('99998888',p.config.matchingSecret),cipher=sealStudentId('99998888',key,p.config.encryptionKey);
+ const a=await linked({universityKey:key,studentIdCiphertext:cipher});await remove(a.owner);
+ assert.equal(await db.subject.count({where:{studentIdCiphertext:cipher}}),0);
+ const audit=JSON.stringify(await db.auditEvent.findMany());assert.ok(!audit.includes(cipher));assert.ok(!audit.includes('99998888'));
+});
