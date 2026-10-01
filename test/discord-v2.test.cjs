@@ -67,7 +67,7 @@ test('Valid-school nonmembers receive verification and a nickname but no current
  await fullSettings();await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'inactive',verifiedUntil:new Date(0)}});await complete();
  const jobs=await claim();assert.equal(jobs.find(j=>j.kind==='verification').desired,true);assert.equal(jobs.find(j=>j.kind==='member').desired,false);assert.equal(jobs.some(j=>j.kind==='semester'),false);
  assert.equal((await claim('nicknames'))[0].nickname,'김학생');assert.equal(await db.membershipSemester.count(),0);
- const me=(await browser(request(http).get('/v1/me'),member,false).expect(200)).body;assert.equal(me.membership.effectiveStatus,'inactive');assert.deepEqual((await browser(request(http).get('/v1/me/servers'),member,false).expect(200)).body.servers,[]);
+ const me=(await browser(request(http).get('/v1/me'),member,false).expect(200)).body;assert.equal(me.membership.effectiveStatus,'revoked');assert.deepEqual((await browser(request(http).get('/v1/me/servers'),member,false).expect(200)).body.servers,[]);
 });
 
 test('Current consent records verified membership evidence, while legacy consent renews idempotently with UUID receipts',async()=>{
@@ -103,7 +103,7 @@ test('Role replacement revokes its previous target before granting and exposes o
  await fullSettings();await complete();await appliedRoles();await configure({semesterRoles:[{semester:'26-2',roleId:replacementRole}]});
  const config=(await bot(request(http).get('/v2/discord/config')).expect(200)).body;assert.ok(config.managedRoleIds.includes(semesterRole));assert.ok(config.managedRoleIds.includes(replacementRole));
  let jobs=await claim();const revoke=jobs.find(j=>j.roleId===semesterRole);assert.ok(revoke&&!revoke.desired);assert.equal(jobs.some(j=>j.roleId===replacementRole),false);for(const job of jobs)await ack(job).expect(204);
- await due();jobs=await claim();assert.equal(jobs.find(j=>j.roleId===replacementRole).desired,true);for(const job of jobs)await ack(job).expect(204);
+ await db.discordRoleState.updateMany({where:{roleId:replacementRole},data:{nextAttemptAt:new Date(0)}});jobs=await claim();assert.equal(jobs.find(j=>j.roleId===replacementRole).desired,true);for(const job of jobs)await ack(job).expect(204);
  assert.deepEqual((await profile()).roles.semesters.map(r=>r.semester),['26-2']);
  const settings=await currentSettings();await browser(request(http).put('/v1/admin/discord'),admin).send({memberRoleId:semesterRole,currentSemester:settings.currentSemester,semesterRoles:settings.semesterRoles,nicknameEnabled:true,expectedRevision:settings.revision}).expect(400);
 });
@@ -148,4 +148,15 @@ test('A full candidate page blocked on old-role removal rotates so an independen
  await complete();await db.discordRoleState.updateMany({where:{discordUserId},data:{nextAttemptAt:new Date(1000)}});
  assert.deepEqual(await claim('roles',1),[]);
  const jobs=await claim('roles',1);assert.equal(jobs.length,1);assert.equal(jobs[0].discordUserId,discordUserId);assert.equal(jobs[0].desired,true);
+});
+
+// A historical successful revoke does not prove the outcome of a later grant in flight.
+test('Role handoff waits for a current-version revoke even after an older successful removal',async()=>{
+ await configure({memberRoleId});await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'inactive'}});await complete();await appliedRoles();
+ await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'active'}});await refresh();
+ const [grant]=await claim();assert.equal(grant.roleId,memberRoleId);assert.equal(grant.desired,true);
+ await configure({memberRoleId:replacementRole});
+ let jobs=await claim();assert.equal(jobs.some(j=>j.roleId===replacementRole),false);for(const job of jobs)await ack(job).expect(204);
+ await ack(grant).expect(409);await due();jobs=await claim();assert.equal(jobs.some(j=>j.roleId===replacementRole),false);const revoke=jobs.find(j=>j.roleId===memberRoleId);assert.equal(revoke.desired,false);for(const job of jobs)await ack(job).expect(204);
+ await db.discordRoleState.updateMany({where:{roleId:replacementRole},data:{nextAttemptAt:new Date(0)}});jobs=await claim();assert.equal(jobs.find(j=>j.roleId===replacementRole).desired,true);
 });

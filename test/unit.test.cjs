@@ -59,7 +59,8 @@ test('Discord school verification and current membership have separate expiry an
  assert.equal(discordMemberEntitlement({...subject,membershipStatus:'inactive'},now).desired,false);
 });
 test('Discord nicknames normalize only known school greetings and preserve bounded legacy Minecraft names',()=>{
- for(const name of ['김학생','김학생님','김학생님 환영합니다.'])assert.equal(discordNickname(name,'A'),'김학생 / A');
+ for(const name of ['김학생','김학생님 환영합니다.'])assert.equal(discordNickname(name,'A'),'김학생 / A');
+ assert.equal(discordNickname('한님','A'),'한님 / A');
  assert.equal(discordNickname('Synthetic','Ab'),'Synthetic / Ab');assert.equal(discordNickname('Synthetic','invalid/name'),'Synthetic');
  assert.equal(discordNickname('김학생님 환영합니다. 공지사항','Test'),null);
  const long=discordNickname('가'.repeat(40),'SixteenCharName1');assert.equal(Array.from(long).length,32);assert.ok(long.endsWith(' / SixteenCharName1'));

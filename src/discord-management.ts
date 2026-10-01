@@ -97,6 +97,9 @@ async function claimContext(p: PassportService, req: Request, input: DiscordClai
   if ((await settingsFor(tx, config)).revision.toString() !== input.settingsRevision) throw new ConflictException({ code: 'discord_settings_changed' });
   return config;
 }
+function removalPending(row: { appliedDesired: boolean | null; appliedVersion: bigint | null; version: bigint; leaseUntil: Date | null }, now: Date) {
+  return row.appliedDesired !== false || row.appliedVersion !== row.version || Boolean(row.leaseUntil && row.leaseUntil > now);
+}
 export async function claimDiscordV2(p: PassportService, req: Request, input: DiscordClaimInput, nickname: boolean) {
   discordService(p, req);
   return policyTransaction(p.db, async tx => {
@@ -106,8 +109,8 @@ export async function claimDiscordV2(p: PassportService, req: Request, input: Di
     const blockedIds = new Set<string>();
     if (!nickname && candidates.length) {
       const key = (row: { discordUserId: string; kind: string; semester: string | null }) => `${row.discordUserId}:${row.kind}:${row.semester ?? ''}`;
-      const unresolved = await tx.discordRoleState.findMany({ where: { guildId: config.guildId, discordUserId: { in: [...new Set(candidates.map(row => row.discordUserId))] }, desired: false, OR: [{ appliedDesired: null }, { appliedDesired: true }] }, select: { discordUserId: true, kind: true, semester: true } });
-      const handoffs = new Set(unresolved.map(key));
+      const unresolved = await tx.discordRoleState.findMany({ where: { guildId: config.guildId, discordUserId: { in: [...new Set(candidates.map(row => row.discordUserId))] }, desired: false }, select: { discordUserId: true, kind: true, semester: true, appliedDesired: true, appliedVersion: true, version: true, leaseUntil: true } });
+      const handoffs = new Set(unresolved.filter(row => removalPending(row, now)).map(key));
       for (const candidate of candidates) if ('desired' in candidate && candidate.desired && candidate.validUntil && candidate.validUntil > now && handoffs.has(key(candidate))) blockedIds.add(candidate.id);
       if (blockedIds.size) await tx.discordRoleState.updateMany({ where: { id: { in: [...blockedIds] } }, data: { nextAttemptAt: new Date(now.getTime() + 5000) } });
     }
@@ -115,7 +118,7 @@ export async function claimDiscordV2(p: PassportService, req: Request, input: Di
       if (blockedIds.has(candidate.id)) continue;
       await projectDiscordIdentity(tx, candidate.discordUserId, now);
       const current = nickname ? await tx.discordNicknameState.findUniqueOrThrow({ where: { id: candidate.id } }) : await tx.discordRoleState.findUniqueOrThrow({ where: { id: candidate.id } });
-      if (!nickname && 'desired' in current && current.desired && await tx.discordRoleState.count({ where: { discordUserId: current.discordUserId, guildId: current.guildId, kind: current.kind, semester: current.semester, desired: false, OR: [{ appliedDesired: null }, { appliedDesired: true }] } })) {
+      if (!nickname && 'desired' in current && current.desired && (await tx.discordRoleState.findMany({ where: { discordUserId: current.discordUserId, guildId: current.guildId, kind: current.kind, semester: current.semester, desired: false }, select: { appliedDesired: true, appliedVersion: true, version: true, leaseUntil: true } })).some(row => removalPending(row, now))) {
         // Rotate blocked handoffs out of the bounded candidate window; completed revocations
         // share the same fair queue as grants, so periodic cleanup cannot starve users.
         await tx.discordRoleState.update({ where: { id: current.id }, data: { nextAttemptAt: new Date(now.getTime() + 5000) } });
