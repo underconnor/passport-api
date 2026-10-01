@@ -132,3 +132,18 @@ test('concurrent invitation attempts cannot create two live grants for the same 
  const target=await session(await subject());const results=await Promise.all(['viewer','operator'].map(role=>browser(request(http).post('/v1/admin/operator-invitations'),owner,true).send({subjectId:target.subject.id,role})));
  assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);assert.equal(await db.operatorInvitation.count({where:{subjectId:target.subject.id,status:'pending'}}),1);
 });
+
+test('additive migration preserves existing administrator authority and makes new rows read-only by default',async()=>{
+ const {readFileSync}=require('node:fs'),{join}=require('node:path');const rollback=new Error('rollback synthetic migration rehearsal');
+ try{await db.$transaction(async tx=>{
+  await tx.$executeRawUnsafe('DROP TABLE "OperatorInvitation"');
+  await tx.$executeRawUnsafe('ALTER TABLE "Administrator" DROP COLUMN "role", DROP COLUMN "revokedAt"');
+  const migration=readFileSync(join(__dirname,'../prisma/migrations/20261002000100_operator_roles/migration.sql'),'utf8').replace(/^--.*$/gm,'');
+  for(const sql of migration.split(';').map(x=>x.trim()).filter(Boolean))await tx.$executeRawUnsafe(sql);
+  const preserved=await tx.administrator.findUnique({where:{subjectId:owner.subject.id}});assert.equal(preserved.role,'owner');assert.equal(preserved.enabled,true);assert.equal(preserved.revokedAt,null);
+  const s=await tx.subject.create({data:{universityKey:randomUUID(),displayName:'Synthetic migration target',identityProvider:'usaint',verifiedUntil:new Date()}});
+  const next=await tx.administrator.create({data:{subjectId:s.id,enabled:true,totpSecret:''}});assert.equal(next.role,'viewer');
+  throw rollback;
+ });}catch(error){assert.equal(error,rollback);}
+ assert.equal(await db.administrator.count(),1);
+});

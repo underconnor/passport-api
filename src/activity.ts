@@ -6,11 +6,11 @@ import { adminContext } from './admin';
 import { gameConsent, presenceDto } from './game-identity';
 import { hash } from './security';
 
-export const counterNames = ['playSeconds', 'blocksBroken', 'blocksPlaced', 'damageTakenMilli', 'deaths', 'mobKills'] as const;
+export const counterNames = ['playSeconds', 'blocksBroken', 'blocksPlaced', 'damageTakenMilli', 'deaths', 'mobKills', 'playerKills', 'distanceCm'] as const;
 export type Counters = Record<typeof counterNames[number], number>;
 export type ActivityRecord = Counters & { minecraftUuid: string; epoch: string };
 export type ActivityBatch = { id: string; serverId: string; records: ActivityRecord[] };
-const empty = (): Counters => ({ playSeconds: 0, blocksBroken: 0, blocksPlaced: 0, damageTakenMilli: 0, deaths: 0, mobKills: 0 });
+const empty = (): Counters => ({ playSeconds: 0, blocksBroken: 0, blocksPlaced: 0, damageTakenMilli: 0, deaths: 0, mobKills: 0, playerKills: 0, distanceCm: 0 });
 export async function collectActivity(p: PassportService, req: Request, input: ActivityBatch) {
   p.service(req);
   // Sorting makes immutable retry equality independent of transport property order.
@@ -18,7 +18,10 @@ export async function collectActivity(p: PassportService, req: Request, input: A
   return policyTransaction(p.db, async tx => {
     const previous = await tx.activityBatch.findUnique({ where: { id: input.id } });
     if (previous) {
-      if (previous.digest !== digest) throw new ConflictException({ code: 'statistics_batch_conflict' });
+      // Old Paper can retry a six-counter batch persisted before this additive rollout.
+      const legacyDigest = input.records.every(row => row.playerKills === 0 && row.distanceCm === 0)
+        ? hash(JSON.stringify([input.serverId, [...input.records].sort((a, b) => a.minecraftUuid.localeCompare(b.minecraftUuid)).map(row => [row.minecraftUuid, row.epoch, ...counterNames.slice(0, 6).map(key => row[key])])])) : null;
+      if (previous.digest !== digest && previous.digest !== legacyDigest) throw new ConflictException({ code: 'statistics_batch_conflict' });
       return { accepted: true, duplicate: true, received: previous.received, ignored: previous.ignored };
     }
     const now = new Date();
@@ -46,7 +49,7 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
   if (kind === 'admin' || kind === 'member') { await adminContext(p, req); if (kind === 'member') { if (!await p.db.subject.findUnique({ where: { id } })) throw new NotFoundException({ code: 'subject_not_found' }); subjectId = id; } }
   if (kind === 'minecraft') { p.service(req); const identity = await p.db.minecraftIdentity.findUnique({ where: { uuid: id } }); if (!identity?.subjectId) throw new NotFoundException({ code: 'minecraft_not_linked' }); subjectId = identity.subjectId; }
   return serializable(p.db, async tx => {
-    const grouped = await tx.activityTotal.groupBy({ by: ['serverId'], where: subjectId ? { generation: { subjectId } } : {}, _sum: { playSeconds: true, blocksBroken: true, blocksPlaced: true, damageTakenMilli: true, deaths: true, mobKills: true }, orderBy: { serverId: 'asc' } });
+    const grouped = await tx.activityTotal.groupBy({ by: ['serverId'], where: subjectId ? { generation: { subjectId } } : {}, _sum: { playSeconds: true, blocksBroken: true, blocksPlaced: true, damageTakenMilli: true, deaths: true, mobKills: true, playerKills: true, distanceCm: true }, orderBy: { serverId: 'asc' } });
     const totals = empty();
     const rows = grouped.map(row => {
       const counters = empty();

@@ -319,6 +319,8 @@ model ActivityTotal {
   damageTakenMilli BigInt @default(0)
   deaths BigInt @default(0)
   mobKills BigInt @default(0)
+  playerKills BigInt @default(0)
+  distanceCm BigInt @default(0)
   @@id([epoch, serverId])
 }
 model ActivityBatch {

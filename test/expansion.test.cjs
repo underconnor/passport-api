@@ -21,7 +21,7 @@ async function consent(id,version=privacyNotice.version){await db.consentReceipt
 async function linked(changes={}){const owner=await subject(changes);await consent(owner.id);const minecraft=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'SyntheticIGN',subjectId:owner.id}});return{owner,minecraft,portal:await session(owner)};}
 async function revision(id){return accountRevision(await db.subject.findUnique({where:{id},include:{minecraft:true,administrator:true,discordIdentity:true}}));}
 async function remove(owner,changes={},user=admin,status=200){return browser(request(http).delete(`/v1/admin/members/${owner.id}`),user,true).send({expectedRevision:await revision(owner.id),confirmation:owner.displayName,...changes}).expect(status);}
-const count={playSeconds:60,blocksBroken:8,blocksPlaced:3,damageTakenMilli:4500,deaths:1,mobKills:2};
+const count={playSeconds:60,blocksBroken:8,blocksPlaced:3,damageTakenMilli:4500,deaths:1,mobKills:2,playerKills:0,distanceCm:0};
 function batch(minecraft,changes={}){return{id:randomUUID(),serverId:'lobby',records:[{minecraftUuid:minecraft.uuid,epoch:minecraft.telemetryEpoch,...count}],...changes};}
 function submit(input,status=200){return service(request(http).post('/v1/minecraft/stats/batches')).send(input).expect(status);}
 function policy(uuid){return service(request(http).get(`/v1/minecraft/policies/${uuid}`)).expect(200);}
@@ -210,4 +210,20 @@ test('administrator student ID expansion leaves game, Discord bot and audit payl
  const a=await linked({universityKey:key,studentIdCiphertext:cipher});
  const output=[(await policy(a.minecraft.uuid)).body,(await service(request(http).get('/v1/minecraft/players').query({query:a.minecraft.name})).expect(200)).body,(await service(request(http).get(`/v1/minecraft/players/${a.minecraft.uuid}/stats`)).expect(200)).body,(await request(http).get('/v2/discord/config').set('Authorization',`Bearer ${p.config.discord.serviceToken}`).expect(200)).body,(await browser(request(http).get('/v1/admin/audit')).expect(200)).body];
  for(const body of output){const text=JSON.stringify(body);assert.ok(!text.includes(studentId));assert.ok(!text.includes(cipher));assert.ok(!text.includes('studentId'));}
+});
+
+test('new player-kill and movement counters aggregate without changing old Paper batches or persisted retries',async()=>{
+ const a=await linked();const legacy=batch(a.minecraft);delete legacy.records[0].playerKills;delete legacy.records[0].distanceCm;
+ const {hash}=require('../dist/security');const legacyNames=['playSeconds','blocksBroken','blocksPlaced','damageTakenMilli','deaths','mobKills'];
+ const digest=hash(JSON.stringify([legacy.serverId,legacy.records.map(row=>[row.minecraftUuid,row.epoch,...legacyNames.map(key=>row[key])])]));
+ await db.activityBatch.create({data:{id:legacy.id,digest,received:1,ignored:0}});
+ assert.equal((await submit(legacy)).body.duplicate,true);assert.equal(await db.activityTotal.count(),0);
+ await submit({...legacy,records:[{...legacy.records[0],playerKills:1}]},409);
+ const fresh={...legacy,id:randomUUID()};await submit(fresh);
+ const extended=batch(a.minecraft,{records:[{minecraftUuid:a.minecraft.uuid,epoch:a.minecraft.telemetryEpoch,...count,playerKills:3,distanceCm:12345}]});
+ await Promise.all([submit(extended),submit(extended)]);
+ const stats=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.equal(stats.totals.playerKills,3);assert.equal(stats.totals.distanceCm,12345);assert.equal(stats.servers[0].distanceCm,12345);assert.equal(stats.totals.playSeconds,120);
+ for(const extra of [{playerKills:-1},{distanceCm:-1},{distanceCm:1.5},{distanceCm:2147483648},{x:1}])await submit(batch(a.minecraft,{records:[{...extended.records[0],...extra}]}),400);
+ const oldEpoch=batch({...a.minecraft,telemetryEpoch:randomUUID()},{records:[{...extended.records[0],epoch:randomUUID()}]});assert.equal((await submit(oldEpoch)).body.ignored,1);
+ assert.equal((await browser(request(http).get('/v1/admin/stats')).expect(200)).body.totals.playerKills,3);
 });

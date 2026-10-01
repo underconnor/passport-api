@@ -48,7 +48,7 @@ export const deleteMemberSchema = z.object({ expectedRevision: z.string().regex(
 export const playerQuerySchema = z.object({ query: z.string().trim().min(1).max(128) }).strict();
 export const presenceSchema = z.object({ serverId: serverIdSchema, observedAt: z.string().datetime({ offset: true }), players: z.array(uuidSchema).max(500).refine(ids => new Set(ids).size === ids.length) }).strict();
 const counterSchema = z.number().int().min(0).max(2147483647);
-export const activityBatchSchema = z.object({ id: uuidSchema, serverId: serverIdSchema, records: z.array(z.object({ minecraftUuid: uuidSchema, epoch: uuidSchema, playSeconds: counterSchema, blocksBroken: counterSchema, blocksPlaced: counterSchema, damageTakenMilli: counterSchema, deaths: counterSchema, mobKills: counterSchema }).strict()).min(1).max(100).refine(rows => new Set(rows.map(row => row.minecraftUuid)).size === rows.length) }).strict();
+export const activityBatchSchema = z.object({ id: uuidSchema, serverId: serverIdSchema, records: z.array(z.object({ minecraftUuid: uuidSchema, epoch: uuidSchema, playSeconds: counterSchema, blocksBroken: counterSchema, blocksPlaced: counterSchema, damageTakenMilli: counterSchema, deaths: counterSchema, mobKills: counterSchema, playerKills: counterSchema.default(0), distanceCm: counterSchema.default(0) }).strict()).min(1).max(100).refine(rows => new Set(rows.map(row => row.minecraftUuid)).size === rows.length) }).strict();
 
 export const adminRoleSchema = z.enum(['owner', 'operator', 'viewer']);
 export const operatorInvitationSchema = z.object({ subjectId: uuidSchema, role: adminRoleSchema }).strict();
