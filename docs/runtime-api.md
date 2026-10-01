@@ -95,3 +95,7 @@ DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [
 [검증된 연결·역할 큐·별도 서비스 권한](discord-integration.md)을 참조합니다. `/v1/auth/session`에 `features:{discordLinking:boolean}`, `/me`와 관리자 회원 목록에 `discordConnection`이 추가됩니다. 기존 사용자 수동 Discord PUT/DELETE는403 `discord_admin_contact_required`이며 관리자가 해제합니다.
 
 Discord 역할·닉네임 v2와 관리자 설정·수동 재조정, 현재 동의 갱신의 DTO는 [Discord 관리 v2](discord-v2.md)를 따른다. `/v2/discord/*`도 별도 봇 Bearer가 필요하며 웹 reverse proxy가 해당 prefix를 API로 전달해야 한다. 비회원은 유효 학교 인증·비정지로 학교 역할을 받을 수 있지만 현재 회원 역할은 활성 명부·TTL을 추가 요구한다. Minecraft의 서버별 자격 계산은 이 변경으로 넓히지 않는다.
+
+## 통계 수집 제어·초기화
+
+[게임 통계 문서](account-game-activity.md)의 수집 설정, 관리자 전용 초기화 미리보기/실행, 정책 `telemetry.presenceEnabled/serverIds` 계약을 따른다. 본인 수집 OFF는 기존 기록을 보존하며, 서버 수집 OFF는 기존 기록을 보존하되 기본 집계에서 제외한다. 운영 로비 `ssu_lobby`는 migration/최초 등록 시 기본 OFF다. 사용자 본인 초기화 API는 제공하지 않는다.

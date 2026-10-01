@@ -10,7 +10,7 @@ export const counterNames = ['playSeconds', 'blocksBroken', 'blocksPlaced', 'dam
 export type Counters = Record<typeof counterNames[number], number>;
 export type ActivityRecord = Counters & { minecraftUuid: string; epoch: string };
 export type ActivityBatch = { id: string; serverId: string; records: ActivityRecord[] };
-const empty = (): Counters => ({ playSeconds: 0, blocksBroken: 0, blocksPlaced: 0, damageTakenMilli: 0, deaths: 0, mobKills: 0, playerKills: 0, distanceCm: 0 });
+export const emptyCounters = (): Counters => ({ playSeconds: 0, blocksBroken: 0, blocksPlaced: 0, damageTakenMilli: 0, deaths: 0, mobKills: 0, playerKills: 0, distanceCm: 0 });
 export async function collectActivity(p: PassportService, req: Request, input: ActivityBatch) {
   p.service(req);
   // Sorting makes immutable retry equality independent of transport property order.
@@ -30,7 +30,7 @@ export async function collectActivity(p: PassportService, req: Request, input: A
     let received = 0;
     for (const row of input.records) {
       const identity = await tx.minecraftIdentity.findUnique({ where: { uuid: row.minecraftUuid }, include: { subject: true } });
-      if (!identity?.subject || identity.telemetryEpoch !== row.epoch || !await gameConsent(tx, identity.subject.id) || !p.gameServers(identity.subject, [server], now).length) continue;
+      if (!server.statisticsEnabled || !identity?.subject?.statisticsEnabled || identity.telemetryEpoch !== row.epoch || !await gameConsent(tx, identity.subject.id) || !p.gameServers(identity.subject, [server], now).length) continue;
       const generation = await tx.activityGeneration.upsert({ where: { epoch: row.epoch }, create: { epoch: row.epoch, subjectId: identity.subject.id, minecraftUuid: row.minecraftUuid }, update: {} });
       if (generation.subjectId !== identity.subject.id || generation.minecraftUuid !== row.minecraftUuid) continue;
       const counters = Object.fromEntries(counterNames.map(key => [key, BigInt(row[key])])) as Record<typeof counterNames[number], bigint>;
@@ -49,22 +49,27 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
   if (kind === 'admin' || kind === 'member') { await adminContext(p, req); if (kind === 'member') { if (!await p.db.subject.findUnique({ where: { id } })) throw new NotFoundException({ code: 'subject_not_found' }); subjectId = id; } }
   if (kind === 'minecraft') { p.service(req); const identity = await p.db.minecraftIdentity.findUnique({ where: { uuid: id } }); if (!identity?.subjectId) throw new NotFoundException({ code: 'minecraft_not_linked' }); subjectId = identity.subjectId; }
   return serializable(p.db, async tx => {
-    const grouped = await tx.activityTotal.groupBy({ by: ['serverId'], where: subjectId ? { generation: { subjectId } } : {}, _sum: { playSeconds: true, blocksBroken: true, blocksPlaced: true, damageTakenMilli: true, deaths: true, mobKills: true, playerKills: true, distanceCm: true }, orderBy: { serverId: 'asc' } });
-    const totals = empty();
+    let records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
+    if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId } }); records = subject ? p.gameServers(subject, records) : []; }
+    const includedIds = records.filter(server => server.statisticsEnabled).map(server => server.id);
+    const grouped = await tx.activityTotal.groupBy({ by: ['serverId'], where: { serverId: { in: includedIds }, ...(subjectId ? { generation: { subjectId } } : {}) }, _sum: { playSeconds: true, blocksBroken: true, blocksPlaced: true, damageTakenMilli: true, deaths: true, mobKills: true, playerKills: true, distanceCm: true }, orderBy: { serverId: 'asc' } });
+    const totals = emptyCounters();
     const rows = grouped.map(row => {
-      const counters = empty();
+      const counters = emptyCounters();
       for (const key of counterNames) { const value = Number(row._sum[key] ?? 0n); if (!Number.isSafeInteger(value) || value < 0) throw new ServiceUnavailableException({ code: 'statistics_overflow' }); counters[key] = value; totals[key] += value; }
       return { serverId: row.serverId, ...counters };
     });
     if (Object.values(totals).some(value => !Number.isSafeInteger(value))) throw new ServiceUnavailableException({ code: 'statistics_overflow' });
-    let records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId } }); records = subject ? p.gameServers(subject, records) : []; }
-    const playerCount = subjectId ? undefined : (await tx.activityGeneration.findMany({ distinct: ['subjectId'], select: { subjectId: true } })).length;
+    const playerCount = subjectId ? undefined : (await tx.activityGeneration.findMany({ where: { totals: { some: { serverId: { in: includedIds } } } }, distinct: ['subjectId'], select: { subjectId: true } })).length;
     const identity = subjectId ? await tx.minecraftIdentity.findUnique({ where: { subjectId }, select: { uuid: true } }) : null;
     const now = new Date();
     const presences = await tx.playerPresence.findMany({ where: subjectId ? { minecraftUuid: identity?.uuid ?? '00000000-0000-0000-0000-000000000000' } : { expiresAt: { gt: now } } });
     const visible = presences.filter(row => row.expiresAt > now && records.some(server => server.id === row.serverId));
-    const servers = records.map(server => ({ serverId: server.id, label: server.label, ...(rows.find(row => row.serverId === server.id) ?? empty()), onlinePlayerCount: visible.filter(row => row.serverId === server.id).length }));
-    return { available: true, totals, servers, ...(playerCount === undefined ? { presence: presenceDto(presences[0], records, now) } : { playerCount, onlinePlayerCount: visible.length }) };
+    const servers = records.map(server => ({ serverId: server.id, label: server.label, collectionEnabled: server.statisticsEnabled, ...(rows.find(row => row.serverId === server.id) ?? emptyCounters()), onlinePlayerCount: visible.filter(row => row.serverId === server.id).length }));
+    const subject = subjectId ? await tx.subject.findUnique({ where: { id: subjectId } }) : null;
+    const consentGranted = subjectId ? await gameConsent(tx, subjectId) : null;
+    const effective = subject ? subject.statisticsEnabled && Boolean(consentGranted) && p.gameServers(subject, records).some(server => server.statisticsEnabled) : null;
+    const collection = { effective, enabled: subject?.statisticsEnabled ?? null, consentGranted, excludedServerIds: records.filter(server => !server.statisticsEnabled).map(server => server.id), historyRetained: true };
+    return { available: true, totals, servers, collection, ...(playerCount === undefined ? { presence: presenceDto(presences[0], records, now) } : { playerCount, onlinePlayerCount: visible.length }) };
   });
 }

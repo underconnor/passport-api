@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { PrismaClient, ServerRecord, Subject } from '@prisma/client';
 import type { Request } from 'express';
@@ -7,7 +8,7 @@ import { adminContext, requireAdminTransaction, protectAdministratorTarget } fro
 import { policyTransaction } from './database';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
-export type ServerSettings = { label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
+export type ServerSettings = { statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
 export type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>;
 type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
@@ -28,13 +29,13 @@ export function permittedServers(subject: ScopeSubject, servers: ServerRecord[],
 
 export function serverDto(server: ServerRecord, now = new Date()) {
   const fresh = (seen: Date | null) => Boolean(seen && seen <= now && now.getTime() - seen.getTime() < 90_000);
-  return { id: server.id, label: server.label, sensitive: server.sensitive, enabled: server.enabled, accessMode: server.accessMode, allowedSubjectIds: server.allowedSubjectIds, paperSeenAt: server.paperSeenAt?.toISOString() ?? null, proxySeenAt: server.proxySeenAt?.toISOString() ?? null, online: fresh(server.paperSeenAt), proxyAvailable: fresh(server.proxySeenAt), createdAt: server.createdAt.toISOString(), updatedAt: server.updatedAt.toISOString() };
+  return { statisticsEnabled: server.statisticsEnabled, id: server.id, label: server.label, sensitive: server.sensitive, enabled: server.enabled, accessMode: server.accessMode, allowedSubjectIds: server.allowedSubjectIds, paperSeenAt: server.paperSeenAt?.toISOString() ?? null, proxySeenAt: server.proxySeenAt?.toISOString() ?? null, online: fresh(server.paperSeenAt), proxyAvailable: fresh(server.proxySeenAt), createdAt: server.createdAt.toISOString(), updatedAt: server.updatedAt.toISOString() };
 }
 
 export async function seedServerRegistry(db: PrismaClient, configured: ServerDefinition[]) {
   await policyTransaction(db, async tx => {
     if (await tx.serverRecord.count() !== 0) return;
-    await tx.serverRecord.createMany({ data: configured.map(server => ({ id: server.id, label: server.label, sensitive: server.sensitive ?? false, enabled: true, accessMode: 'roster' })) });
+    await tx.serverRecord.createMany({ data: configured.map(server => ({ id: server.id, label: server.label, sensitive: server.sensitive ?? false, enabled: true, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'roster' })) });
   });
 }
 
@@ -48,7 +49,7 @@ export async function heartbeatServers(p: PassportService, req: Request, input: 
     const seen = input.source === 'paper' ? { paperSeenAt: new Date() } : { proxySeenAt: new Date() };
     for (const server of input.servers) {
       if (ids.has(server.id)) await tx.serverRecord.update({ where: { id: server.id }, data: seen });
-      else await tx.serverRecord.create({ data: { id: server.id, label: server.label, enabled: false, accessMode: 'roster', ...seen } });
+      else await tx.serverRecord.create({ data: { id: server.id, label: server.label, enabled: false, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'roster', ...seen } });
     }
     return { received: input.servers.length, registered: newServers.length };
   });
@@ -74,10 +75,10 @@ export async function setServerSettings(p: PassportService, req: Request, id: st
     // A registry change can affect every linked member, including explicit per-user limits.
     const identities = await tx.minecraftIdentity.findMany({ where: { subjectId: { not: null } }, select: { uuid: true } });
     for (const identity of identities) {
-      const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
+      const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '', ...(settings.statisticsEnabled !== undefined && settings.statisticsEnabled !== previous.statisticsEnabled ? { telemetryEpoch: randomUUID() } : {}) } });
       await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
     }
-    const before = { label: previous.label, sensitive: previous.sensitive, enabled: previous.enabled, accessMode: previous.accessMode, allowedSubjectIds: previous.allowedSubjectIds };
+    const before = { statisticsEnabled: previous.statisticsEnabled, label: previous.label, sensitive: previous.sensitive, enabled: previous.enabled, accessMode: previous.accessMode, allowedSubjectIds: previous.allowedSubjectIds };
     await tx.auditEvent.create({ data: { action: 'admin.server_updated', actorSubjectId: actor.session.subjectId, objectId: id, details: { before, after: settings } } });
     return { server: serverDto(updated) };
   });

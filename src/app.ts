@@ -13,6 +13,8 @@ import { operatorInvitationSchema, operatorRoleSchema, emptyMutationSchema } fro
 import { memberQuerySchema, deleteMemberSchema, playerQuerySchema, presenceSchema, activityBatchSchema } from './security';
 import { playerLookup, reportPresence, renewPrivacyConsent } from './game-identity';
 import { collectActivity, statistics } from './activity';
+import { statisticsSettings, previewStatisticsReset, resetStatistics } from './statistics-controls';
+import { statisticsSettingsSchema, statisticsResetSchema, statisticsResetScopeSchema } from './security';
 import { RosterSyncError } from './membership-sync';
 import { UniversityVerificationError } from './integrations/usaint';
 import { adminServers, heartbeatServers, setServerSettings } from './registry';
@@ -90,6 +92,10 @@ class PassportController {
   @Post('v1/minecraft/presence') @HttpCode(200) presence(@Req() req: Request, @Body() body: unknown) { return reportPresence(this.passport, req, parse(presenceSchema, body)); }
   @Post('v1/minecraft/stats/batches') @HttpCode(200) activity(@Req() req: Request, @Body() body: unknown) { return collectActivity(this.passport, req, parse(activityBatchSchema, body)); }
   @Get('v1/minecraft/players/:uuid/stats') playerStats(@Req() req: Request, @Param('uuid') uuid: string) { return statistics(this.passport, req, 'minecraft', parse(uuidSchema, uuid)); }
+  @Get('v1/me/statistics-settings') statisticsSettings(@Req() req: Request) { return statisticsSettings(this.passport, req); }
+  @Put('v1/me/statistics-settings') putStatisticsSettings(@Req() req: Request, @Body() body: unknown) { return statisticsSettings(this.passport, req, parse(statisticsSettingsSchema, body)); }
+  @Post('v1/admin/stats/reset/preview') @HttpCode(200) previewStatisticsReset(@Req() req: Request, @Body() body: unknown) { return previewStatisticsReset(this.passport, req, parse(statisticsResetScopeSchema, body)); }
+  @Post('v1/admin/stats/reset') @HttpCode(200) resetStatistics(@Req() req: Request, @Body() body: unknown) { return resetStatistics(this.passport, req, parse(statisticsResetSchema, body)); }
   @Get('v1/me/stats') myStats(@Req() req: Request) { return statistics(this.passport, req, 'me'); }
   @Get('v1/admin/stats') adminStats(@Req() req: Request) { return statistics(this.passport, req, 'admin'); }
   @Get('v1/admin/members/:id/stats') memberStats(@Req() req: Request, @Param('id') id: string) { return statistics(this.passport, req, 'member', parse(uuidSchema, id)); }

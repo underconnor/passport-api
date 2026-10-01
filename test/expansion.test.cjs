@@ -83,7 +83,7 @@ test('deleted Discord account retains only revocation jobs until matching role a
 });
 test('old Discord consent remains valid while expanded game identity and collection require new explicit consent',async()=>{
  const owner=await subject({displayName:'검증학생님 환영합니다',admissionYear:'26'});await consent(owner.id,'2026-10-01.3');const minecraft=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'LegacyIGN',subjectId:owner.id}}),portal=await session(owner);
- assert.equal(await managementConsent(db,owner.id),true);let result=(await policy(minecraft.uuid)).body;assert.equal(result.status,'active');assert.equal(result.display.displayName,'');assert.equal(result.display.member,false);assert.equal(result.display.admissionYear,null);assert.deepEqual(result.telemetry,{enabled:false,epoch:null});
+ assert.equal(await managementConsent(db,owner.id),true);let result=(await policy(minecraft.uuid)).body;assert.equal(result.status,'active');assert.equal(result.display.displayName,'');assert.equal(result.display.member,false);assert.equal(result.display.admissionYear,null);assert.deepEqual(result.telemetry,{enabled:false,epoch:null,presenceEnabled:false,serverIds:[]});
  await browser(request(http).post('/v1/me/privacy/consent'),portal,true).send({consent:{accepted:true,version:privacyNotice.version}}).expect(200);
  result=(await policy(minecraft.uuid)).body;assert.equal(result.display.displayName,'검증학생');assert.equal(result.display.admissionYear,'26');assert.equal(result.display.member,true);assert.equal(result.telemetry.enabled,true);assert.equal(result.telemetry.epoch,minecraft.telemetryEpoch);assert.deepEqual(result.allowedServers.map(s=>s.id),result.allowedServerIds);
  await browser(request(http).post('/v1/me/privacy/consent'),portal,true).send({consent:{accepted:true,version:privacyNotice.version}}).expect(200);assert.equal(await db.consentReceipt.count({where:{subjectId:owner.id,version:privacyNotice.version}}),1);
@@ -120,7 +120,7 @@ test('statistics are owner or administrator only and unauthorized server labels 
  await browser(request(http).get(`/v1/admin/members/${a.owner.id}/stats`),b.portal).expect(403);
  assert.deepEqual((await browser(request(http).get('/v1/me/stats'),b.portal).expect(200)).body.totals,count);
  const aggregate=(await browser(request(http).get('/v1/admin/stats')).expect(200)).body;assert.equal(aggregate.totals.playSeconds,120);assert.equal(aggregate.playerCount,2);assert.ok(!JSON.stringify(aggregate).includes(a.owner.displayName));
- await db.subject.update({where:{id:a.owner.id},data:{scopeRestricted:true,scopeLimit:[]}});const hidden=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.equal(hidden.servers.length,0);assert.equal(hidden.totals.playSeconds,60);
+ await db.subject.update({where:{id:a.owner.id},data:{scopeRestricted:true,scopeLimit:[]}});const hidden=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.equal(hidden.servers.length,0);assert.equal(hidden.totals.playSeconds,0);
 });
 
 test('database rejects unknown consent sources and malformed admission-year hints',async()=>{

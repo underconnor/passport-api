@@ -272,7 +272,9 @@ export class PassportService {
       const consent = subject ? await gameConsent(tx, subject.id) : false;
       const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: consent && subject && status === 'active' ? gameName(subject.displayName).slice(0, 40) : '', member: consent && status === 'active' && memberStatus === 'active', admissionYear: consent && status === 'active' ? subject?.admissionYear ?? null : null };
       const administrator = Boolean(subject && schoolActive(subject, now) && gameAdministrator(subject.administrator));
-      const telemetry = { enabled: consent && status === 'active', epoch: consent && status === 'active' ? identity.telemetryEpoch : null };
+      const presenceEnabled = consent && status === 'active';
+      const telemetryEnabled = presenceEnabled && Boolean(subject?.statisticsEnabled);
+      const telemetry = { enabled: telemetryEnabled, epoch: telemetryEnabled ? identity.telemetryEpoch : null, presenceEnabled, serverIds: telemetryEnabled ? allowedServers.filter(server => server.statisticsEnabled).map(server => server.id) : [] };
       const serverChoices = allowedServers.map(({ id, label }) => ({ id, label }));
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
       let policyVersion = identity.policyVersion;

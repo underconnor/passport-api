@@ -13,6 +13,8 @@ model Subject {
   department String @default("")
   academicStatus String @default("UNKNOWN")
   admissionYear String? @db.VarChar(2)
+  statisticsEnabled Boolean @default(true)
+  statisticsRevision Int @default(1)
   studentIdCiphertext String?
   universityExpiryPolicyVersion Int @default(0)
   universityVerifiedAt DateTime?
@@ -181,6 +183,7 @@ model ServerRecord {
   sensitive Boolean @default(false)
   enabled Boolean @default(false)
   accessMode String @default("roster")
+  statisticsEnabled Boolean @default(true)
   allowedSubjectIds String[] @default([]) @db.Uuid
   paperSeenAt DateTime?
   proxySeenAt DateTime?

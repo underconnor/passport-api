@@ -36,7 +36,7 @@ export const rosterSyncSchema = z.object({ expectedApprovalDigest: z.string().re
 export const serverIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const serverLabelSchema = z.string().trim().min(1).max(80).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 export const serverHeartbeatSchema = z.object({ source: z.enum(['velocity', 'paper']), servers: z.array(z.object({ id: serverIdSchema, label: serverLabelSchema }).strict()).max(64).refine(servers => new Set(servers.map(server => server.id)).size === servers.length) }).strict();
-export const serverSettingsSchema = z.object({ label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
+export const serverSettingsSchema = z.object({ statisticsEnabled: z.boolean().optional(), label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new BadRequestException({ code: 'invalid_request', message: 'Request has invalid fields' });
@@ -54,3 +54,12 @@ export const adminRoleSchema = z.enum(['owner', 'operator', 'viewer']);
 export const operatorInvitationSchema = z.object({ subjectId: uuidSchema, role: adminRoleSchema }).strict();
 export const operatorRoleSchema = z.object({ role: adminRoleSchema }).strict();
 export const emptyMutationSchema = z.object({}).strict();
+
+export const statisticsSettingsSchema = z.object({ enabled: z.boolean(), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export const statisticsResetScopeSchema = z.discriminatedUnion('scope', [
+  z.object({ scope: z.literal('subject'), subjectId: uuidSchema }).strict(),
+  z.object({ scope: z.literal('server'), serverId: serverIdSchema }).strict(),
+  z.object({ scope: z.literal('all') }).strict(),
+]);
+const resetConfirmation = { expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmation: z.string().max(100) };
+export const statisticsResetSchema = z.discriminatedUnion('scope', [statisticsResetScopeSchema.options[0].extend(resetConfirmation), statisticsResetScopeSchema.options[1].extend(resetConfirmation), statisticsResetScopeSchema.options[2].extend(resetConfirmation)]);
