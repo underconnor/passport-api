@@ -33,3 +33,8 @@ CREATE TABLE "ActivityBatch" (
  "ignored" INTEGER NOT NULL,
  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE "ConsentReceipt" DROP CONSTRAINT "ConsentReceipt_source_check";
+ALTER TABLE "ConsentReceipt" ADD CONSTRAINT "ConsentReceipt_source_check" CHECK ("source" IN ('portal_login','minecraft_link','discord_link','privacy_renewal'));
+ALTER TABLE "Subject" ADD CONSTRAINT "Subject_admissionYear_check" CHECK ("admissionYear" IS NULL OR "admissionYear" ~ '^[0-9]{2}$');
+ALTER TABLE "ActivityTotal" ADD CONSTRAINT "ActivityTotal_nonnegative_check" CHECK ("playSeconds">=0 AND "blocksBroken">=0 AND "blocksPlaced">=0 AND "damageTakenMilli">=0 AND "deaths">=0 AND "mobKills">=0);
+ALTER TABLE "ActivityBatch" ADD CONSTRAINT "ActivityBatch_counts_check" CHECK ("received">=0 AND "ignored">=0 AND "received"+"ignored">0);

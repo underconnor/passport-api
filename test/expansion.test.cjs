@@ -122,3 +122,7 @@ test('statistics are owner or administrator only and unauthorized server labels 
  const aggregate=(await browser(request(http).get('/v1/admin/stats')).expect(200)).body;assert.equal(aggregate.totals.playSeconds,120);assert.equal(aggregate.playerCount,2);assert.ok(!JSON.stringify(aggregate).includes(a.owner.displayName));
  await db.subject.update({where:{id:a.owner.id},data:{scopeRestricted:true,scopeLimit:[]}});const hidden=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.equal(hidden.servers.length,0);assert.equal(hidden.totals.playSeconds,60);
 });
+
+test('database rejects unknown consent sources and malformed admission-year hints',async()=>{
+ const owner=await subject();await assert.rejects(()=>db.consentReceipt.create({data:{subjectId:owner.id,version:privacyNotice.version,source:'invented',contextId:randomUUID(),acceptedAt:new Date()}}));await assert.rejects(()=>db.subject.update({where:{id:owner.id},data:{admissionYear:'XX'}}));assert.equal((await db.subject.findUnique({where:{id:owner.id}})).admissionYear,null);
+});
