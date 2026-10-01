@@ -7,7 +7,7 @@ if(!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL required')
 const database=new URL(process.env.TEST_DATABASE_URL);
 if(!database.pathname.endsWith('_test')) throw new Error('Refusing a non-test database');
 database.searchParams.set('schema','auth_test');
-Object.assign(process.env,{DATABASE_URL:database.href,NODE_ENV:'production',PASSPORT_AUTH_MODE:'university',WEB_ORIGIN:'https://portal.example.test',ADMIN_ORIGIN:'https://admin.example.test',API_SERVICE_TOKEN:'test-service-'.repeat(5),SESSION_SECRET:'test-session-'.repeat(5),ROSTER_MATCHING_SECRET:'test-roster-'.repeat(5),DATA_ENCRYPTION_KEY:'ab'.repeat(32),ADMIN_BOOTSTRAP_TOKEN:'test-bootstrap-'.repeat(5),SHEETS_SYNC_ENABLED:'false'});
+Object.assign(process.env,{DATABASE_URL:database.href,NODE_ENV:'production',PASSPORT_AUTH_MODE:'university',WEB_ORIGIN:'https://portal.example.test',ADMIN_ORIGIN:'https://admin.example.test',API_SERVICE_TOKEN:'test-service-'.repeat(5),SESSION_SECRET:'test-session-'.repeat(5),ROSTER_MATCHING_SECRET:'test-roster-'.repeat(5),DATA_ENCRYPTION_KEY:'ab'.repeat(32),ADMIN_BOOTSTRAP_TOKEN:'test-bootstrap-'.repeat(5),ADMIN_MFA_REQUIRED:'true',SHEETS_SYNC_ENABLED:'false'});
 const {createApp}=require('../dist/app');
 const {PassportService}=require('../dist/passport.service');
 const {universityAdapter}=require('../dist/university-auth');
@@ -124,6 +124,59 @@ test('admin bootstrap requires school identity, private host, correct token and 
  const other=await login('99990002',ADMIN);await browser(request(http).post('/v1/admin/enrollment'),other,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(409);
  await mfa(admin,secret);await browser(request(http).get('/v1/admin/overview'),admin).expect(200);
  await browser(request(http).post('/v1/admin/enrollment'),admin,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(409);
+});
+test('optional MFA still requires school login, registered admin, bootstrap and CSRF without claiming MFA happened',async()=>{
+ service.config.adminMfaRequired=false;
+ const user=await login('99990001',ADMIN);
+ const before=await browser(request(http).get('/v1/admin/session'),user).expect(200);
+ assert.equal(before.body.mfaRequired,false);assert.equal(before.body.authorized,false);
+ await browser(request(http).get('/v1/admin/overview'),user).expect(403);
+ await browser(request(http).post('/v1/admin/enrollment'),user).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(403);
+ await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:'wrong-bootstrap-'.repeat(4)}).expect(403);
+ const enrolled=await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(200);
+ assert.deepEqual(enrolled.body,{enrolled:true,mfaRequired:false});
+ const stored=await db.administrator.findUnique({where:{subjectId:user.profile.id}});assert.equal(stored.enabled,true);assert.equal(stored.totpSecret,'');
+ const status=await browser(request(http).get('/v1/admin/session'),user).expect(200);
+ assert.equal(status.body.authorized,true);assert.equal(status.body.mfaVerified,false);assert.equal(status.body.mfaVerifiedUntil,null);
+ await browser(request(http).get('/v1/admin/overview'),user).expect(200);
+ assert.equal((await browser(request(http).post('/v1/admin/mfa'),user,true).send({code:'000000'}).expect(403)).body.code,'mfa_not_enrolled');
+ const other=await login('99990002',ADMIN);await browser(request(http).get('/v1/admin/overview'),other).expect(403);
+ await browser(request(http).post('/v1/admin/enrollment'),other,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(409);
+ let calls=0;service.membership.preview=async()=>{calls++;return{databaseChanged:false};};
+ await browser(request(http).post('/v1/admin/roster/preview'),user).send({}).expect(403);assert.equal(calls,0);
+ await browser(request(http).post('/v1/admin/roster/preview'),user,true).send({}).expect(200);assert.equal(calls,1);
+ await db.subject.update({where:{id:user.profile.id},data:{universityVerifiedUntil:new Date(Date.now()-1)}});
+ assert.equal((await browser(request(http).get('/v1/admin/overview'),user).expect(403)).body.code,'university_login_required');
+ assert.equal((await browser(request(http).get('/v1/admin/session'),user).expect(200)).body.authorized,false);
+});
+test('disabling MFA preserves an existing TOTP secret and required mode still rejects an unverified session',async()=>{
+ const user=await login('99990001',ADMIN);await enroll(user);
+ const original=await db.administrator.findUnique({where:{subjectId:user.profile.id}});
+ service.config.adminMfaRequired=false;
+ await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(200);
+ assert.equal((await db.administrator.findUnique({where:{subjectId:user.profile.id}})).totpSecret,original.totpSecret);
+ assert.equal((await browser(request(http).get('/v1/admin/session'),user).expect(200)).body.authorized,true);
+ service.config.adminMfaRequired=true;
+ const status=await browser(request(http).get('/v1/admin/session'),user).expect(200);
+ assert.equal(status.body.authorized,false);assert.equal(status.body.mfaRequired,true);assert.equal(status.body.enrollmentPending,false);assert.equal(status.body.mfaVerified,false);
+ assert.equal((await browser(request(http).get('/v1/admin/overview'),user).expect(403)).body.code,'mfa_required');
+});
+test('reenabling MFA lets only the same registered subject enroll an absent secret with bootstrap',async()=>{
+ service.config.adminMfaRequired=false;const user=await login('99990001',ADMIN);
+ await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(200);
+ service.config.adminMfaRequired=true;
+ const pending=await browser(request(http).get('/v1/admin/session'),user).expect(200);
+ assert.equal(pending.body.enrolled,true);assert.equal(pending.body.enrollmentPending,true);assert.equal(pending.body.authorized,false);
+ await browser(request(http).get('/v1/admin/overview'),user).expect(403);
+ const other=await login('99990002',ADMIN);
+ await browser(request(http).post('/v1/admin/enrollment'),other,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(409);
+ await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:'wrong-bootstrap-'.repeat(4)}).expect(403);
+ const enrollment=await browser(request(http).post('/v1/admin/enrollment'),user,true).send({bootstrapToken:process.env.ADMIN_BOOTSTRAP_TOKEN}).expect(200);
+ assert.equal(enrollment.body.mfaRequired,true);assert.ok(enrollment.body.secret);assert.ok(enrollment.body.otpauthUrl);
+ await browser(request(http).get('/v1/admin/overview'),user).expect(403);
+ await mfa(user,enrollment.body.secret);
+ const done=await browser(request(http).get('/v1/admin/session'),user).expect(200);
+ assert.equal(done.body.authorized,true);assert.equal(done.body.enrollmentPending,false);assert.equal(done.body.mfaVerified,true);
 });
 test('MFA elevates only a rotated session, rejects code replay and expires after fifteen minutes',async()=>{
  const admin=await login('99990001',ADMIN);const secret=await enroll(admin);const oldCookie=admin.cookie,oldCsrf=admin.csrf,step=Math.floor(Date.now()/30000);const result=await mfa(admin,secret,step);

@@ -4,7 +4,7 @@ export interface Config {
   serviceToken: string; sessionSecret: string; webOrigin: string; origins: string[];
   bindHost: string; port: number; servers: ServerDefinition[];
   adminOrigin: string; matchingSecret: string; encryptionKey: string; adminBootstrapToken?: string;
-  trustProxyHops: number;
+  trustProxyHops: number; adminMfaRequired: boolean;
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const required = (name: string) => { const v = env[name]; if (!v) throw new Error(`${name} is required`); return v; };
@@ -21,6 +21,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const matchingSecret = env.ROSTER_MATCHING_SECRET ?? '';
   const encryptionKey = env.DATA_ENCRYPTION_KEY ?? '';
   const adminBootstrapToken = env.ADMIN_BOOTSTRAP_TOKEN;
+  const mfaSetting = env.ADMIN_MFA_REQUIRED ?? 'true';
+  if (!['true', 'false'].includes(mfaSetting)) throw new Error('ADMIN_MFA_REQUIRED must be true or false');
+  const adminMfaRequired = mfaSetting === 'true';
   if (authMode === 'university' && (matchingSecret.length < 32 || !/^[0-9a-f]{64}$/i.test(encryptionKey))) throw new Error('University mode requires ROSTER_MATCHING_SECRET and a 32-byte hex DATA_ENCRYPTION_KEY');
   if (adminBootstrapToken && adminBootstrapToken.length < 43) throw new Error('ADMIN_BOOTSTRAP_TOKEN must contain at least 32 random bytes');
   const adminOrigin = env.ADMIN_ORIGIN ? new URL(env.ADMIN_ORIGIN).origin : '';
@@ -31,5 +34,5 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const trustProxyHops = Number(env.TRUST_PROXY_HOPS ?? 0);
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 3) throw new Error('Invalid trusted proxy hop count');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops };
+  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops, adminMfaRequired };
 }

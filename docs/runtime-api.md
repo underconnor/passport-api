@@ -18,10 +18,10 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | POST /v1/auth/university/start | `{link?:{id,token}}` + CSRF → `{url,expiresIn:300}`. university 모드만 학교로 이동 |
 | GET /v1/auth/university/callback/:state | 학교 `sToken,sIdno` query. 현재 브라우저 세션·단회 state·학번 검증 후 새 세션 및 303 clean redirect |
 | GET /v1/auth/university/callback | state 없는 구형 경로는 비활성 |
-| GET /v1/admin/session | 학교 로그인·등록·MFA 상태와 최초 등록 가능 여부 |
-| POST /v1/admin/enrollment | `{bootstrapToken}` → TOTP 수동 등록키와 otpauth URI. 첫 운영자 한 명만 |
+| GET /v1/admin/session | 학교 로그인·등록·실제 MFA 상태, `mfaRequired`, 최종 접근 여부 `authorized`, 최초 등록 가능 여부 |
+| POST /v1/admin/enrollment | `{bootstrapToken}` → MFA 필수이면 `{mfaRequired:true,secret,otpauthUrl}`, 선택이면 `{mfaRequired:false,enrolled:true}`. 첫 운영자 한 명만 |
 | POST /v1/admin/mfa | `{code}` → 15분 추가 인증, 쿠키·CSRF 회전 |
-| GET /v1/admin/overview | 학교 인증·운영자 권한·MFA 후 실제 회원/연결/명부 통계 |
+| GET /v1/admin/overview | 학교 인증·운영자 권한·설정상 필요한 MFA 후 실제 회원/연결/명부 통계 |
 | GET /v1/admin/members?cursor= | 50명씩 회원·연결·권한 조회 |
 | PUT /v1/admin/members/:id/access | `{suspended,restricted,serverIds}`. 명부 허용 범위 안에서만 제한 |
 | DELETE /v1/admin/members/:id/minecraft | 연결 해제·정책 버전 증가·pending 링크 취소 |
@@ -63,6 +63,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 | ROSTER_MATCHING_SECRET | 학교 학번·명부 학번의 동일 HMAC 키, 최소 32자 |
 | DATA_ENCRYPTION_KEY | 독립 32바이트 hex. 일시 연결 문맥과 TOTP 등록키 AES-256-GCM 암호화 |
 | ADMIN_BOOTSTRAP_TOKEN | 최초 운영자 등록용 32바이트 이상 난수. 채팅·소스에 기록하지 않음 |
+| ADMIN_MFA_REQUIRED | 기본 `true`. 명시적 `false`이면 등록된 운영자의 추가 TOTP 단계만 생략. 학교 인증·관리자 등록·CSRF는 유지 |
 | TRUST_PROXY_HOPS | 기본0. Caddy→nginx→API의 고정 격리 배포만2. API 직접 host port 금지 |
 | NODE_ENV | production에서는 개발 인증 금지·HTTPS 필수 |
 | SERVER_REGISTRY_JSON | 최대 64개 `{id,label,sensitive?}` 배열 |
@@ -72,6 +73,8 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 현재 요청 제한은 단일 API 인스턴스 메모리 기준이며 DB 신원 데이터는 전부 PostgreSQL에 저장합니다. 여러 공개 인스턴스를 배포하기 전 공통 gateway rate limit을 구성해야 합니다. TTL 정리는 매 60초 실행하며 만료 세션, 만료 후 24시간 지난 연결 요청, 7일 지난 outbox, 90일 지난 감사 기록을 지웁니다. DB 연결 장애 시 다음 주기에 재시도합니다.
 
 학교 토큰은 성공 후 SHA256 지문만 24시간 보관해 재사용을 거절합니다. 콜백 state는 5분이며 링크 복귀 문맥은 인증 암호화해 보관합니다. MFA는 30초 TOTP·±1 step 허용, 사용한 step 재사용 금지, 실패 5회 후 15분 잠금입니다. 관리자 제한은 Sheets 동기화로 해제되지 않습니다. 명부 구성은 [Sheets 문서](sheets-integration.md)를 참조합니다.
+
+`ADMIN_MFA_REQUIRED=false`는 학교 로그인만으로 누구나 관리자가 되는 설정이 아닙니다. 유효한 학교 세션과 `enabled` 관리자 등록이 필요하고 첫 등록에는 같은 bootstrap 비밀을 확인합니다. `authorized`는 접근 허용 여부이며 `mfaVerified`는 실제 TOTP 검증 사실만 나타냅니다. 기존 TOTP 비밀과 검증 기록은 설정 변경으로 지우지 않습니다. TOTP 없이 최초 등록한 관리자가 이후 필수 모드로 바뀌면 `enrollmentPending=true`가 됩니다. 해당 동일 학교 계정이 올바른 bootstrap 코드를 다시 입력해 TOTP를 등록하고 검증해야 접근할 수 있으며, 다른 계정의 재등록은 거절합니다.
 
 이벤트는 정책 변경 알림이며 허가 증거가 아닙니다. `reset=true`이면 접속자를 다시 조회하고, 보존한 UUID 버전보다 낮은 정책은 거절합니다. DB 복원으로 버전이 내려가면 운영자가 버전을 복구해야 합니다.
 

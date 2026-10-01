@@ -12,6 +12,12 @@ test('secrets must be independent and sufficiently long',()=>{
   assert.throws(()=>configFromEnv({...base,SESSION_SECRET:'short'}));
   assert.throws(()=>configFromEnv({...base,SESSION_SECRET:base.API_SERVICE_TOKEN}));
 });
+test('administrator MFA defaults on and only an explicit false disables the requirement',()=>{
+ assert.equal(configFromEnv(base).adminMfaRequired,true);
+ assert.equal(configFromEnv({...base,ADMIN_MFA_REQUIRED:'true'}).adminMfaRequired,true);
+ assert.equal(configFromEnv({...base,ADMIN_MFA_REQUIRED:'false'}).adminMfaRequired,false);
+ for(const value of ['','0','FALSE','disabled'])assert.throws(()=>configFromEnv({...base,ADMIN_MFA_REQUIRED:value}),/ADMIN_MFA_REQUIRED/);
+});
 test('Discord is a positive unsigned 64-bit decimal string',()=>{
   for(const id of ['1','18446744073709551615']) assert.ok(discordSchema.safeParse({id}).success);
   for(const id of ['0','01','18446744073709551616','-1','1.0',12345,'','00012']) assert.equal(discordSchema.safeParse({id}).success,false);

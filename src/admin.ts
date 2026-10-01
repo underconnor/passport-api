@@ -19,7 +19,7 @@ export async function adminContext(p: PassportService, req: Request, mutation = 
   const c = await schoolContext(p, req, mutation);
   const admin = await p.db.administrator.findUnique({ where: { subjectId: c.session.subjectId! } });
   if (!admin?.enabled) throw new ForbiddenException({ code: 'admin_required' });
-  if (!c.session.mfaVerifiedUntil || c.session.mfaVerifiedUntil <= new Date()) throw new ForbiddenException({ code: 'mfa_required' });
+  if (p.config.adminMfaRequired && (!admin.totpSecret || !c.session.mfaVerifiedUntil || c.session.mfaVerifiedUntil <= new Date())) throw new ForbiddenException({ code: 'mfa_required' });
   return c;
 }
 export async function adminStatus(p: PassportService, req: Request) {
@@ -28,21 +28,25 @@ export async function adminStatus(p: PassportService, req: Request) {
   const subject = c.session.subject;
   const admin = subject ? await p.db.administrator.findUnique({ where: { subjectId: subject.id } }) : null;
   const schoolValid = Boolean(subject?.identityProvider === 'usaint' && subject.universityVerifiedUntil && subject.universityVerifiedUntil > new Date());
-  return { authenticated: Boolean(subject), displayName: subject?.displayName ?? null, enrolled: Boolean(admin?.enabled), enrollmentPending: Boolean(admin && !admin.enabled), bootstrapAvailable: Boolean(p.config.adminBootstrapToken) && await p.db.administrator.count() === 0, mfaVerified: Boolean(schoolValid && admin?.enabled && c.session.mfaVerifiedUntil && c.session.mfaVerifiedUntil > new Date()), mfaVerifiedUntil: c.session.mfaVerifiedUntil?.toISOString() ?? null };
+  const mfaVerified = Boolean(schoolValid && admin?.enabled && admin.totpSecret && c.session.mfaVerifiedUntil && c.session.mfaVerifiedUntil > new Date());
+  return { authenticated: Boolean(subject), displayName: subject?.displayName ?? null, enrolled: Boolean(admin?.enabled), enrollmentPending: Boolean(admin && (!admin.enabled || (p.config.adminMfaRequired && !admin.totpSecret))), bootstrapAvailable: Boolean(p.config.adminBootstrapToken) && await p.db.administrator.count() === 0, mfaRequired: p.config.adminMfaRequired, authorized: Boolean(schoolValid && admin?.enabled && (!p.config.adminMfaRequired || mfaVerified)), mfaVerified, mfaVerifiedUntil: c.session.mfaVerifiedUntil?.toISOString() ?? null };
 }
 export async function beginEnrollment(p: PassportService, req: Request, bootstrapToken: string) {
   const c = await schoolContext(p, req, true);
   if (!p.config.adminBootstrapToken || !equal(bootstrapToken, p.config.adminBootstrapToken)) throw new ForbiddenException({ code: 'bootstrap_invalid' });
   const subjectId = c.session.subjectId!;
-  const secret = newTotpSecret();
+  const secret = p.config.adminMfaRequired ? newTotpSecret() : null;
   await serializable(p.db, async tx => {
     const first = await tx.administrator.findFirst();
-    if (first && (first.subjectId !== subjectId || first.enabled)) throw new ConflictException({ code: 'admin_enrollment_closed' });
-    await tx.administrator.upsert({ where: { subjectId }, create: { subjectId, totpSecret: seal(secret, p.config.encryptionKey, `totp:${subjectId}`) }, update: { totpSecret: seal(secret, p.config.encryptionKey, `totp:${subjectId}`), failedAttempts: 0, lockedUntil: null } });
-    await tx.auditEvent.create({ data: { action: 'admin.enrollment_started', subjectId, actorSubjectId: subjectId } });
+    const reenrollingWithoutSecret = Boolean(p.config.adminMfaRequired && first?.subjectId === subjectId && first.enabled && !first.totpSecret);
+    if (first && (first.subjectId !== subjectId || (first.enabled && !reenrollingWithoutSecret))) throw new ConflictException({ code: 'admin_enrollment_closed' });
+    const sealedSecret = secret ? seal(secret, p.config.encryptionKey, `totp:${subjectId}`) : '';
+    await tx.administrator.upsert({ where: { subjectId }, create: { subjectId, totpSecret: sealedSecret, enabled: !p.config.adminMfaRequired }, update: { ...(secret ? { totpSecret: sealedSecret } : { enabled: true }), failedAttempts: 0, lockedUntil: null } });
+    await tx.auditEvent.create({ data: { action: p.config.adminMfaRequired ? 'admin.enrollment_started' : 'admin.enrolled', subjectId, actorSubjectId: subjectId, details: { mfaRequired: p.config.adminMfaRequired } } });
   });
+  if (!secret) return { enrolled: true, mfaRequired: false };
   const label = encodeURIComponent(`Passport:${c.session.subject!.displayName}`);
-  return { secret, otpauthUrl: `otpauth://totp/${label}?secret=${secret}&issuer=Passport&algorithm=SHA1&digits=6&period=30` };
+  return { mfaRequired: true, secret, otpauthUrl: `otpauth://totp/${label}?secret=${secret}&issuer=Passport&algorithm=SHA1&digits=6&period=30` };
 }
 export async function verifyAdminMfa(p: PassportService, req: Request, res: Response, code: string) {
   const c = await schoolContext(p, req, true);
@@ -50,6 +54,7 @@ export async function verifyAdminMfa(p: PassportService, req: Request, res: Resp
   const result = await serializable(p.db, async tx => {
     const admin = await tx.administrator.findUnique({ where: { subjectId: c.session.subjectId! } });
     if (!admin) return { error: 'admin_required' };
+    if (!admin.totpSecret) return { error: 'mfa_not_enrolled' };
     if (admin.lockedUntil && admin.lockedUntil > new Date()) return { error: 'mfa_locked' };
     const step = verifyTotp(unseal(admin.totpSecret, p.config.encryptionKey, `totp:${admin.subjectId}`), code, admin.lastTotpStep);
     if (step === null) {

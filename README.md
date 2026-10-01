@@ -7,13 +7,13 @@
 ## 현재 구현
 
 - PostgreSQL에 저장하는 브라우저 세션, 로그인 시 세션 회전, host/port별 audience, 사용자·관리자 쿠키 분리, HttpOnly·SameSite와 Origin/CSRF 검증
-- 서비스 Bearer 인증, 5분 단회 연결 URL, 웹·게임 양쪽 확인, 접속 세션 일치, 원자적 연결·취소·재사용 차단
+- 서비스 Bearer 인증, 5분 단회 연결 URL, 웹·게임 양쪽 확인, 접속 세션별 상태 조회, 원자적 연결·취소·재사용 차단
 - UUID별 단조 증가 정책 버전, 최대 60초 lease, 회원·명부 유효기간 만료 시 차단, 변경 outbox 기록
 - 자기신고 Discord ID 입력·수정·삭제. 양의 uint64 문자열만 받으며 소유권 확인이나 권한 증거로 사용하지 않음
 - 명시적으로 켜는 합성 개발 회원·비회원. `NODE_ENV=production`에서는 개발 인증 시작 자체를 거부
 - 학교 공식 로그인 → 브라우저에 묶인 단회 콜백 → SAP 토큰 교환 → 학교 학번 대조, HMAC 신원 매칭과 세션 회전
 - Google Sheets 읽기 전용 어댑터, 원자적 명부 snapshot 반영, 60초 자동 동기화와 15분 freshness, 위험 변경 digest 승인
-- 관리자 학교 인증 + 최초 등록 코드 + TOTP, 회원 조회·접속 정지·서버 범위 제한·Minecraft 연결 해제·감사 조회
+- 관리자 학교 인증 + 최초 등록 코드 + 기본 필수 TOTP, 명시적 `ADMIN_MFA_REQUIRED=false` 옵션, 회원 조회·접속 정지·서버 범위 제한·Minecraft 연결 해제·감사 조회
 - 서비스 인증으로 보호하는 outbox cursor API, 유실·보관 기간 경과·DB 복원 시 전체 재검사 신호
 - 만료 세션 정리와 단일 인스턴스용 요청 제한
 
