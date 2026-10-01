@@ -4,7 +4,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { Request } from 'express';
 import type { Config } from './config';
 import type { PassportService } from './passport.service';
-import { adminContext } from './admin';
+import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
 import { discordService } from './discord';
 import { policyTransaction } from './database';
 import { managementConsent, projectDiscordIdentity, refreshDiscordSubject } from './discord-policy';
@@ -50,6 +50,7 @@ async function reconcile(tx: Prisma.TransactionClient, guildId: string, now: Dat
 export async function updateDiscordSettings(p: PassportService, req: Request, input: DiscordSettingsInput) {
   const actor = await adminContext(p, req, true), config = configured(p);
   return policyTransaction(p.db, async tx => {
+    await requireAdminTransaction(p, tx, actor);
     const current = await settingsFor(tx, config);
     if (current.revision.toString() !== input.expectedRevision) throw new ConflictException({ code: 'discord_settings_changed' });
     const plans = [{ roleId: current.verificationRoleId, kind: 'verification', semester: null }, ...(input.memberRoleId ? [{ roleId: input.memberRoleId, kind: 'member', semester: null }] : []), ...input.semesterRoles.map(r => ({ ...r, kind: 'semester' }))];
@@ -69,6 +70,7 @@ export async function updateDiscordSettings(p: PassportService, req: Request, in
 export async function reconcileDiscord(p: PassportService, req: Request, expectedRevision: string) {
   const actor = await adminContext(p, req, true), config = configured(p);
   return policyTransaction(p.db, async tx => {
+    await requireAdminTransaction(p, tx, actor);
     if ((await settingsFor(tx, config)).revision.toString() !== expectedRevision) throw new ConflictException({ code: 'discord_settings_changed' });
     await reconcile(tx, config.guildId, new Date());
     await tx.auditEvent.create({ data: { action: 'admin.discord_reconcile_requested', actorSubjectId: actor.session.subjectId, objectId: config.guildId } });

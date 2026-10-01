@@ -28,7 +28,7 @@ function policy(uuid){return service(request(http).get(`/v1/minecraft/policies/$
 beforeEach(async()=>{
  app=await createApp();p=app.get(PassportService);db=p.db;http=app.getHttpServer();
  await db.$executeRawUnsafe('TRUNCATE TABLE "Subject", "MinecraftIdentity", "DiscordIdentity", "DiscordLinkSession", "AuditEvent", "RosterMembership", "RosterSnapshot", "PolicyEvent", "PlayerPresence", "ActivityBatch" RESTART IDENTITY CASCADE');
- const actor=await subject({displayName:'관리자검증'});await db.administrator.create({data:{subjectId:actor.id,enabled:true,totpSecret:''}});admin=await session(actor,'admin.example.test');
+ const actor=await subject({displayName:'관리자검증'});await db.administrator.create({data:{subjectId:actor.id,enabled:true,role:'owner',totpSecret:''}});admin=await session(actor,'admin.example.test');
 });
 afterEach(async()=>{await app.close();});
 

@@ -3,7 +3,8 @@ import { createHmac, randomUUID } from 'node:crypto';
 import type { Prisma, Subject, MinecraftIdentity, DiscordIdentity, Administrator } from '@prisma/client';
 import type { Request } from 'express';
 import type { PassportService } from './passport.service';
-import { adminContext } from './admin';
+import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
+import { adminPermissions } from './admin-permissions';
 import { policyTransaction } from './database';
 import { discordProfile, projectDiscordIdentity } from './discord-policy';
 import { studentKey } from './integrations/sheets';
@@ -14,7 +15,7 @@ import { verifiedStudentId } from './school-identity';
 type Account = Subject & { minecraft: MinecraftIdentity | null; discordIdentity: DiscordIdentity | null; administrator: Administrator | null };
 export type MemberQuery = { q: string; membership: 'all' | 'active' | 'inactive' | 'suspended'; sort: 'name' | 'newest' | 'oldest'; limit: number; cursor?: string };
 export function accountRevision(account: Account) {
-  return hash(JSON.stringify({ id: account.id, displayName: account.displayName, department: account.department, admissionYear: account.admissionYear, identityProvider: account.identityProvider, universityVerifiedUntil: account.universityVerifiedUntil, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, minecraft: account.minecraft && [account.minecraft.uuid, account.minecraft.name, account.minecraft.subjectId, account.minecraft.telemetryEpoch], discord: account.discordIdentity && [account.discordIdentity.discordUserId, account.discordIdentity.subjectId, account.discordIdentity.verifiedAt], administrator: account.administrator?.enabled ?? false }));
+  return hash(JSON.stringify({ id: account.id, displayName: account.displayName, department: account.department, admissionYear: account.admissionYear, identityProvider: account.identityProvider, universityVerifiedUntil: account.universityVerifiedUntil, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, minecraft: account.minecraft && [account.minecraft.uuid, account.minecraft.name, account.minecraft.subjectId, account.minecraft.telemetryEpoch], discord: account.discordIdentity && [account.discordIdentity.discordUserId, account.discordIdentity.subjectId, account.discordIdentity.verifiedAt], administrator: account.administrator ? [account.administrator.enabled, account.administrator.role, account.administrator.revokedAt] : null }));
 }
 function cursorSignature(secret: string, payload: string) { return createHmac('sha256', secret).update(`members:${payload}`).digest('base64url'); }
 function queryKey(input: MemberQuery) { return hash(JSON.stringify([input.q, input.membership, input.sort, input.limit])); }
@@ -56,16 +57,20 @@ export async function adminMembers(p: PassportService, req: Request, input: Memb
 }
 export async function deleteMember(p: PassportService, req: Request, id: string, input: { expectedRevision: string; confirmation: string }) {
   const actor = await adminContext(p, req, true);
-  return eraseSubject(p, id, input, actor.session.subjectId!);
+  return eraseSubject(p, id, input, actor.session.subjectId!, actor);
 }
 /** Shared operator entry point. Null actor is a distinct operator audit action, never an impersonated administrator. */
-export async function eraseSubject(p: PassportService, id: string, input: { expectedRevision: string; confirmation: string }, actorSubjectId: string | null) {
+export async function eraseSubject(p: PassportService, id: string, input: { expectedRevision: string; confirmation: string }, actorSubjectId: string | null, actor?: Awaited<ReturnType<typeof adminContext>>) {
   return policyTransaction(p.db, async tx => {
+    if (actor) await requireAdminTransaction(p, tx, actor);
     const account = await tx.subject.findUnique({ where: { id }, include: { minecraft: true, discordIdentity: true, administrator: true } });
     if (!account || account.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
     if (actorSubjectId === id) throw new ConflictException({ code: 'cannot_delete_self' });
-    if (actorSubjectId && !(await tx.administrator.findUnique({ where: { subjectId: actorSubjectId } }))?.enabled) throw new ForbiddenException({ code: 'admin_required' });
-    if (account.administrator?.enabled && await tx.administrator.count({ where: { enabled: true } }) <= 1) throw new ConflictException({ code: 'last_administrator' });
+    if (actorSubjectId) {
+      if (!adminPermissions(await tx.administrator.findUnique({ where: { subjectId: actorSubjectId } })).write) throw new ForbiddenException({ code: 'admin_write_required' });
+      await protectAdministratorTarget(tx, actorSubjectId, id);
+    }
+    if (account.administrator?.enabled && account.administrator.role === 'owner' && await tx.administrator.count({ where: { enabled: true, role: 'owner', revokedAt: null } }) <= 1) throw new ConflictException({ code: 'last_administrator' });
     if (!equal(input.expectedRevision, accountRevision(account))) throw new ConflictException({ code: 'subject_changed' });
     if (input.confirmation !== account.displayName) throw new BadRequestException({ code: 'confirmation_mismatch' });
     if (account.discordIdentity) {

@@ -65,3 +65,10 @@ test('Discord nicknames normalize only known school greetings and preserve bound
  assert.equal(discordNickname('김학생님 환영합니다. 공지사항','Test'),null);
  const long=discordNickname('가'.repeat(40),'SixteenCharName1');assert.equal(Array.from(long).length,32);assert.ok(long.endsWith(' / SixteenCharName1'));
 });
+
+test('administrator roles fail closed and viewer never inherits mutating game capability',()=>{
+ const {adminPermissions,gameAdministrator}=require('../dist/admin-permissions');
+ for(const value of [null,{enabled:false,role:'owner',revokedAt:null},{enabled:true,role:'owner',revokedAt:new Date()},{enabled:true,role:'invented',revokedAt:null}]){assert.deepEqual(adminPermissions(value),{read:false,write:false,manageOperators:false});assert.equal(gameAdministrator(value),false);}
+ assert.deepEqual(adminPermissions({enabled:true,role:'viewer',revokedAt:null}),{read:true,write:false,manageOperators:false});assert.equal(gameAdministrator({enabled:true,role:'viewer',revokedAt:null}),false);
+ assert.deepEqual(adminPermissions({enabled:true,role:'operator',revokedAt:null}),{read:true,write:true,manageOperators:false});assert.equal(gameAdministrator({enabled:true,role:'owner',revokedAt:null}),true);
+});

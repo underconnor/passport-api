@@ -3,7 +3,7 @@ import type { PrismaClient, ServerRecord, Subject } from '@prisma/client';
 import type { Request } from 'express';
 import type { ServerDefinition } from './config';
 import type { PassportService } from './passport.service';
-import { adminContext } from './admin';
+import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
 import { policyTransaction } from './database';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
@@ -63,6 +63,7 @@ export async function adminServers(p: PassportService, req: Request) {
 export async function setServerSettings(p: PassportService, req: Request, id: string, input: ServerSettings) {
   const actor = await adminContext(p, req, true);
   return policyTransaction(p.db, async tx => {
+    await requireAdminTransaction(p, tx, actor);
     const previous = await tx.serverRecord.findUnique({ where: { id } });
     if (!previous) throw new NotFoundException({ code: 'server_not_found' });
     if (previous.updatedAt.getTime() !== new Date(input.expectedUpdatedAt).getTime()) throw new ConflictException({ code: 'server_changed' });

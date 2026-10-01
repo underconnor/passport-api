@@ -33,7 +33,7 @@ beforeEach(async()=>{
  app=await createApp();p=app.get(PassportService);db=p.db;http=app.getHttpServer();
  await db.$executeRawUnsafe('TRUNCATE TABLE "Subject", "DiscordIdentity", "DiscordLinkSession", "DiscordGuildSettings", "AuditEvent", "RosterMembership", "RosterSnapshot", "PolicyEvent" RESTART IDENTITY CASCADE');await seedDiscordSettings(db,p.config.discord);
  const subject=await db.subject.create({data:{displayName:'김학생',identityProvider:'usaint',universityKey:studentKey('99990001',p.config.matchingSecret),membershipStatus:'active',allowedServerIds:['lobby'],verifiedUntil:new Date(Date.now()+900000),universityVerifiedUntil:new Date(Date.now()+3600000)}});
- member=await session(subject.id);admin=await session(subject.id,'admin.example.test');await db.administrator.create({data:{subjectId:subject.id,enabled:true,totpSecret:''}});
+ member=await session(subject.id);admin=await session(subject.id,'admin.example.test');await db.administrator.create({data:{subjectId:subject.id,enabled:true,role:'owner',totpSecret:''}});
 });
 afterEach(async()=>{await app.close();});
 

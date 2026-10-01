@@ -26,7 +26,7 @@ after(async()=>{await db.$disconnect();});
 beforeEach(async()=>{
  await db.$executeRawUnsafe('TRUNCATE TABLE "ServerRecord", "ConsumedUniversityToken", "UniversityAuthRequest", "Administrator", "AuditEvent", "PolicyEvent", "LinkSession", "WebSession", "MinecraftIdentity", "Subject", "RosterMembership", "RosterSnapshot" RESTART IDENTITY CASCADE');
  app=await createApp();http=app.getHttpServer();const actor=await subject();admin=await session(actor);
- await db.administrator.create({data:{subjectId:actor.id,enabled:true,totpSecret:''}});
+ await db.administrator.create({data:{subjectId:actor.id,enabled:true,role:'owner',totpSecret:''}});
 });
 afterEach(async()=>{await app?.close();});
 

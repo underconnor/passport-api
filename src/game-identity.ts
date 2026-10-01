@@ -1,3 +1,4 @@
+import { gameAdministrator } from './admin-permissions';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { Prisma, Subject, PlayerPresence } from '@prisma/client';
 import type { Request } from 'express';
@@ -38,7 +39,7 @@ export async function playerLookup(p: PassportService, req: Request, query: stri
     const subject = identity.subject!, consent = await gameConsent(p.db, subject.id), active = schoolActive(subject, now);
     const presence = await p.db.playerPresence.findUnique({ where: { minecraftUuid: identity.uuid } });
     const online = Boolean(presence && presence.expiresAt > now);
-    return { minecraftUuid: identity.uuid, minecraftName: identity.name, displayName: consent && active ? gameName(subject.displayName) : '', member: consent && active && subject.membershipStatus === 'active' && subject.verifiedUntil > now, admissionYear: consent && active ? subject.admissionYear : null, administrator: Boolean(active && subject.administrator?.enabled), online, serverId: online ? presence!.serverId : null, lastSeenAt: presence?.observedAt.toISOString() ?? null };
+    return { minecraftUuid: identity.uuid, minecraftName: identity.name, displayName: consent && active ? gameName(subject.displayName) : '', member: consent && active && subject.membershipStatus === 'active' && subject.verifiedUntil > now, admissionYear: consent && active ? subject.admissionYear : null, administrator: Boolean(active && gameAdministrator(subject.administrator)), online, serverId: online ? presence!.serverId : null, lastSeenAt: presence?.observedAt.toISOString() ?? null };
   }));
   return { players };
 }

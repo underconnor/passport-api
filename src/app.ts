@@ -6,8 +6,10 @@ import helmet from 'helmet';
 import { PassportService } from './passport.service';
 import { accessSchema, createLinkSchema, developmentIdentitySchema, createDiscordLinkSchema, discordRoleClaimSchema, discordRoleAckSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema, webLinkConfirmSchema } from './security';
 import { startUniversity, finishUniversity } from './university-auth';
-import { adminAudit, adminContext, adminOverview, adminStatus, beginEnrollment, setMemberAccess, unlinkMember, verifyAdminMfa } from './admin';
+import { adminAudit, adminContext, adminOverview, adminStatus, requireAdminTransaction, beginEnrollment, setMemberAccess, unlinkMember, verifyAdminMfa } from './admin';
 import { adminMembers, deleteMember } from './members';
+import { listOperators, inviteOperator, pendingOperatorInvitations, acceptOperatorInvitation, cancelOperatorInvitation, changeOperator } from './operators';
+import { operatorInvitationSchema, operatorRoleSchema, emptyMutationSchema } from './security';
 import { memberQuerySchema, deleteMemberSchema, playerQuerySchema, presenceSchema, activityBatchSchema } from './security';
 import { playerLookup, reportPresence, renewPrivacyConsent } from './game-identity';
 import { collectActivity, statistics } from './activity';
@@ -74,6 +76,13 @@ class PassportController {
   @Get('v1/admin/session') adminSession(@Req() req: Request) { return adminStatus(this.passport, req); }
   @Post('v1/admin/enrollment') @HttpCode(200) enroll(@Req() req: Request, @Body() body: unknown) { return beginEnrollment(this.passport, req, parse(enrollmentSchema, body).bootstrapToken); }
   @Post('v1/admin/mfa') @HttpCode(200) mfa(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: unknown) { return verifyAdminMfa(this.passport, req, res, parse(mfaSchema, body).code); }
+  @Get('v1/admin/operators') operators(@Req() req: Request) { return listOperators(this.passport, req); }
+  @Post('v1/admin/operator-invitations') @HttpCode(200) inviteOperator(@Req() req: Request, @Body() body: unknown) { return inviteOperator(this.passport, req, parse(operatorInvitationSchema, body)); }
+  @Get('v1/admin/operator-invitations/pending') pendingOperators(@Req() req: Request) { return pendingOperatorInvitations(this.passport, req); }
+  @Post('v1/admin/operator-invitations/:id/accept') @HttpCode(200) acceptOperator(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { parse(emptyMutationSchema, body); return acceptOperatorInvitation(this.passport, req, parse(uuidSchema, id)); }
+  @Delete('v1/admin/operator-invitations/:id') cancelOperator(@Req() req: Request, @Param('id') id: string) { return cancelOperatorInvitation(this.passport, req, parse(uuidSchema, id)); }
+  @Put('v1/admin/operators/:id') changeOperator(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return changeOperator(this.passport, req, parse(uuidSchema, id), parse(operatorRoleSchema, body).role); }
+  @Delete('v1/admin/operators/:id') revokeOperator(@Req() req: Request, @Param('id') id: string) { return changeOperator(this.passport, req, parse(uuidSchema, id), null); }
   @Get('v1/admin/overview') admin(@Req() req: Request) { return adminOverview(this.passport, req); }
   @Get('v1/admin/members') members(@Req() req: Request, @Query() query: unknown) { return adminMembers(this.passport, req, parse(memberQuerySchema, query)); }
   @Delete('v1/admin/members/:id') deleteMember(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return deleteMember(this.passport, req, parse(uuidSchema, id), parse(deleteMemberSchema, body)); }
@@ -93,7 +102,7 @@ class PassportController {
   @Post('v1/admin/roster/preview') @HttpCode(200) async rosterPreview(@Req() req: Request) { await adminContext(this.passport, req, true); return this.passport.membership.preview(); }
   @Post('v1/admin/roster/sync') @HttpCode(200) async rosterSync(@Req() req: Request, @Body() body: unknown) {
     const c = await adminContext(this.passport, req, true); const input = parse(rosterSyncSchema, body);
-    const result = input.expectedApprovalDigest ? await this.passport.membership.approve(input.expectedApprovalDigest) : await this.passport.membership.sync();
+    const result = input.expectedApprovalDigest ? await this.passport.membership.approve(input.expectedApprovalDigest, tx => requireAdminTransaction(this.passport, tx, c).then(() => {})) : await this.passport.membership.sync(undefined, tx => requireAdminTransaction(this.passport, tx, c).then(() => {}));
     await this.passport.db.auditEvent.create({ data: { action: 'admin.roster_sync', actorSubjectId: c.session.subjectId, objectId: result.digest } });
     return result;
   }
@@ -108,7 +117,7 @@ export async function createApp() {
   // Bounded single-instance limiter; deployment currently uses one API replica.
   const buckets = new Map<string, { count: number; expires: number }>();
   app.use((req: Request, res: Response, next: NextFunction) => {
-    const limited = req.path.startsWith('/v1/auth/') || req.path === '/v1/admin/mfa' || req.path === '/v1/admin/enrollment' || (['/v1/link-sessions','/v1/discord/link-sessions'].includes(req.path) && req.method === 'POST');
+    const limited = req.path.startsWith('/v1/auth/') || req.path === '/v1/admin/mfa' || req.path === '/v1/admin/enrollment' || req.path.startsWith('/v1/admin/operator-invitations') || (['/v1/link-sessions','/v1/discord/link-sessions'].includes(req.path) && req.method === 'POST');
     if (!limited) return next();
     const now = Date.now();
     for (const [key, value] of buckets) if (value.expires <= now) buckets.delete(key);

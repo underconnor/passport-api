@@ -2,7 +2,7 @@ import { ConflictException, ForbiddenException, GoneException, NotFoundException
 import { Prisma, type DiscordLinkSession } from '@prisma/client';
 import type { Request } from 'express';
 import type { PassportService } from './passport.service';
-import { adminContext } from './admin';
+import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
 import { policyTransaction } from './database';
 import { discordEntitlement, projectDiscordIdentity, refreshDiscordRole } from './discord-policy';
 import { equal, hash, opaqueToken } from './security';
@@ -95,6 +95,8 @@ export async function webConfirmDiscord(p: PassportService, req: Request, id: st
 export async function unlinkDiscord(p: PassportService, req: Request, subjectId: string) {
   const actor = await adminContext(p, req, true);
   return policyTransaction(p.db, async tx => {
+    await requireAdminTransaction(p, tx, actor);
+    await protectAdministratorTarget(tx, actor.session.subjectId!, subjectId);
     const subject = await tx.subject.findUnique({ where: { id: subjectId } });
     if (!subject) throw new NotFoundException({ code: 'member_not_found' });
     const identity = await tx.discordIdentity.findUnique({ where: { subjectId }, include: { roles: true } });

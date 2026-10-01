@@ -37,6 +37,8 @@ model Subject {
   discordLinks DiscordLinkSession[]
   membershipSemesters MembershipSemester[]
   activityGenerations ActivityGeneration[]
+  operatorInvitations OperatorInvitation[] @relation("InvitationTarget")
+  issuedOperatorInvitations OperatorInvitation[] @relation("InvitationIssuer")
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -132,11 +134,28 @@ model Administrator {
   subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   totpSecret String
   enabled Boolean @default(false)
+  role String @default("viewer")
+  revokedAt DateTime?
   lastTotpStep BigInt @default(-1)
   failedAttempts Int @default(0)
   lockedUntil DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+model OperatorInvitation {
+  id String @id @default(uuid()) @db.Uuid
+  subjectId String @db.Uuid
+  subject Subject @relation("InvitationTarget", fields: [subjectId], references: [id], onDelete: Cascade)
+  issuerSubjectId String @db.Uuid
+  issuer Subject @relation("InvitationIssuer", fields: [issuerSubjectId], references: [id], onDelete: Cascade)
+  role String
+  status String @default("pending")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  acceptedAt DateTime?
+  revokedAt DateTime?
+  @@index([subjectId, status])
+  @@index([issuerSubjectId, status])
 }
 model RosterSnapshot {
   id String @id

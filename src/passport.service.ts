@@ -1,3 +1,4 @@
+import { gameAdministrator } from './admin-permissions';
 import { randomUUID } from 'node:crypto';
 import { purgeRevokedDeletedAccounts } from './members';
 import { gameConsent, gameName, schoolActive } from './game-identity';
@@ -270,7 +271,7 @@ export class PassportService {
       const allowedServerIds = allowedServers.map(server => server.id);
       const consent = subject ? await gameConsent(tx, subject.id) : false;
       const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: consent && subject && status === 'active' ? gameName(subject.displayName).slice(0, 40) : '', member: consent && status === 'active' && memberStatus === 'active', admissionYear: consent && status === 'active' ? subject?.admissionYear ?? null : null };
-      const administrator = Boolean(subject && schoolActive(subject, now) && subject.administrator?.enabled);
+      const administrator = Boolean(subject && schoolActive(subject, now) && gameAdministrator(subject.administrator));
       const telemetry = { enabled: consent && status === 'active', epoch: consent && status === 'active' ? identity.telemetryEpoch : null };
       const serverChoices = allowedServers.map(({ id, label }) => ({ id, label }));
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));

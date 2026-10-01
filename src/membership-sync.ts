@@ -1,3 +1,4 @@
+import { HttpException } from '@nestjs/common';
 import { createHash, createHmac } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { policyTransaction, serializable } from './database';
@@ -7,7 +8,7 @@ import { readGoogleSheet, RosterEntry, SheetsConfig, sheetsConfig, validateSnaps
 const currentSnapshotId = 'current';
 const defaultMaxAgeMs = 15 * 60 * 1000;
 export type RosterSnapshotInput = { entries: RosterEntry[]; fetchedAt: Date; sourceKey: string };
-export type RosterSyncOptions = { allowedServerIds: string[]; maxAgeMs?: number; expectedApprovalDigest?: string };
+export type RosterSyncOptions = { allowedServerIds: string[]; maxAgeMs?: number; expectedApprovalDigest?: string; authorize?: (tx: Prisma.TransactionClient) => Promise<void> };
 export type RosterRisk = 'empty_roster' | 'mass_revocation' | 'source_changed';
 export type RosterPreview = { digest: string; total: number; active: number; previousTotal: number; risks: RosterRisk[]; fetchedAt: string; expiresAt: string; databaseChanged: false };
 export type RosterSyncSummary = Omit<RosterPreview, 'databaseChanged'> & { databaseChanged: true; updatedSubjects: number; changedPolicies: number };
@@ -57,6 +58,7 @@ export function previewRosterSnapshot(db: PrismaClient, input: RosterSnapshotInp
 /** This is the sole roster mutation: snapshot, subjects, audit, and policy outbox commit together. */
 export function applyRosterSnapshot(db: PrismaClient, input: RosterSnapshotInput, options: RosterSyncOptions, now = new Date()): Promise<RosterSyncSummary> {
   return policyTransaction(db, async tx => {
+    await options.authorize?.(tx);
     const preview = await previewInTransaction(tx, input, options, now);
     if (options.expectedApprovalDigest && options.expectedApprovalDigest !== preview.digest) throw new RosterSyncError('approval_mismatch', preview);
     if (preview.risks.length && options.expectedApprovalDigest !== preview.digest) throw new RosterSyncError('approval_required', preview);
@@ -117,7 +119,7 @@ export async function previewRosterSync(db: PrismaClient, env: NodeJS.ProcessEnv
   const { config, options } = integrationConfig(env);
   return previewRosterSnapshot(db, await readSnapshot(config), options);
 }
-export async function runRosterSync(db: PrismaClient, env: NodeJS.ProcessEnv = process.env, approval: { expectedApprovalDigest?: string } = {}) {
+export async function runRosterSync(db: PrismaClient, env: NodeJS.ProcessEnv = process.env, approval: { expectedApprovalDigest?: string; authorize?: RosterSyncOptions['authorize'] } = {}) {
   const { config, options } = integrationConfig(env);
   return applyRosterSnapshot(db, await readSnapshot(config), { ...options, ...approval });
 }
@@ -128,14 +130,15 @@ export function startMembershipSync(db: PrismaClient, env: NodeJS.ProcessEnv = p
   let lastSuccessAt: string | null = null;
   let lastError: string | null = null;
   let enabled = false;
-  const sync = async (expectedApprovalDigest?: string) => {
+  const sync = async (expectedApprovalDigest?: string, authorize?: RosterSyncOptions['authorize']) => {
     if (running) throw new RosterSyncError('sync_busy');
     running = true;
     try {
-      const result = await runRosterSync(db, env, { expectedApprovalDigest });
+      const result = await runRosterSync(db, env, { expectedApprovalDigest, authorize });
       lastSuccessAt = new Date().toISOString(); lastError = null;
       return result;
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       lastError = error instanceof RosterSyncError ? error.code : 'apply_failed';
       // Never propagate database/Google errors carrying source configuration or member rows.
       throw error instanceof RosterSyncError ? error : new RosterSyncError('apply_failed');
@@ -150,5 +153,5 @@ export function startMembershipSync(db: PrismaClient, env: NodeJS.ProcessEnv = p
       timer.unref();
     } catch { lastError = 'configuration_error'; }
   }
-  return { stop: () => { clearInterval(timer); }, sync, preview: () => previewRosterSync(db, env), approve: (digest: string) => sync(digest), status: () => ({ enabled, running, lastSuccessAt, lastError }) };
+  return { stop: () => { clearInterval(timer); }, sync, preview: () => previewRosterSync(db, env), approve: (digest: string, authorize?: RosterSyncOptions['authorize']) => sync(digest, authorize), status: () => ({ enabled, running, lastSuccessAt, lastError }) };
 }

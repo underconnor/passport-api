@@ -30,7 +30,7 @@ beforeEach(async()=>{
  await db.$executeRawUnsafe('TRUNCATE TABLE "Subject", "DiscordIdentity", "DiscordLinkSession", "DiscordRoleState", "AuditEvent", "RosterMembership", "RosterSnapshot", "ConsumedUniversityToken", "PolicyEvent" RESTART IDENTITY CASCADE');
  const data={displayName:'Synthetic',identityProvider:'usaint',membershipStatus:'active',allowedServerIds:['lobby'],verifiedUntil:new Date(Date.now()+900000),universityVerifiedUntil:new Date(Date.now()+3600000)};
  const a=await db.subject.create({data:{...data,universityKey:studentKey('99990001',p.config.matchingSecret)}}),b=await db.subject.create({data:{...data,universityKey:studentKey('99990002',p.config.matchingSecret)}});
- member=await session(a.id);other=await session(b.id);admin=await session(a.id,ADMIN);await db.administrator.create({data:{subjectId:a.id,enabled:true,totpSecret:''}});
+ member=await session(a.id);other=await session(b.id);admin=await session(a.id,ADMIN);await db.administrator.create({data:{subjectId:a.id,enabled:true,role:'owner',totpSecret:''}});
  originalVerify=universityAdapter.verify;universityAdapter.verify=async input=>({provider:'ssu-usaint',studentNumber:input.sIdno,name:'Synthetic',department:'Test',academicStatus:'ENROLLED',courseLabel:'학사 / 1학기 재학',parserVersion:'ssu-main-student-v1',verifiedAt:new Date()});
 });
 afterEach(async()=>{universityAdapter.verify=originalVerify;await app.close();});
