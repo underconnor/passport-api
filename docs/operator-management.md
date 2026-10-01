@@ -24,3 +24,5 @@
 MFA 분실 전용 복구와 초대 계정의 새 TOTP 등록은 별도 보류한다. `ADMIN_MFA_REQUIRED=true`인 배포에서 초대 수락은 `mfa_enrollment_unavailable`로 차단해 설정된 MFA를 우회하지 않는다. 기존 bootstrap/TOTP 로그인 검증은 유지한다.
 
 주요 오류: `owner_required`, `admin_write_required`, `self_admin_change_forbidden`, `last_owner`, `operator_not_found`, `operator_already_enrolled`, `target_university_login_required`, `invitation_pending`, `invitation_not_found`, `invitation_expired`, `invitation_unavailable`. 인증/CSRF 오류는 기존 규칙을 유지한다. 감사에는 역할·대상 내부 ID·초대 ID만 남기고 전체 학번, 학교 토큰, TOTP 키, 세션 토큰, 암호문은 포함하지 않는다.
+
+역할 기능 배포 이후 viewer가 존재하면 역할 구분을 모르는 이전 API로 되돌릴 수 없다. 이전 API는 enabled만 보고 viewer에게 변경 권한을 줄 수 있기 때문이다. 새 운영자 등록 전 기존 owner만 유지한 상태인지 확인하거나, 역할을 이해하는 최근 정상 이미지를 사용한다. 비owner 권한의 회수와 구버전 복원은 별도 승인된 복구 작업이며 자동으로 수행하지 않는다.
