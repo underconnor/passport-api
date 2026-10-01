@@ -49,7 +49,7 @@ test('Discord settings require admin host, CSRF, current school login and optimi
  await browser(request(http).post('/v1/admin/discord/reconcile'),admin).send({expectedRevision:'1'}).expect(409);
  await browser(request(http).post('/v1/admin/discord/reconcile'),admin).send({expectedRevision:'2'}).expect(200);
  assert.equal(await db.auditEvent.count({where:{action:'admin.discord_settings_changed'}}),1);assert.equal(await db.auditEvent.count({where:{action:'admin.discord_reconcile_requested'}}),1);
- await db.subject.update({where:{id:member.subjectId},data:{universityVerifiedUntil:new Date(0)}});await browser(request(http).get('/v1/admin/discord'),admin,false).expect(403);
+ await db.subject.update({where:{id:admin.subjectId},data:{universityVerifiedUntil:new Date(0)}});await browser(request(http).get('/v1/admin/discord'),admin,false).expect(403);
 });
 
 test('V2 bot credentials, strict version and revision fence new jobs from legacy workers',async()=>{
