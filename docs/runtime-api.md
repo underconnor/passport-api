@@ -7,15 +7,18 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | 메서드·경로 | 입력 / 응답 |
 |---|---|
 | GET /v1/auth/session | 익명 세션도 생성. `{authenticated,csrfToken,authMode}` |
+| GET /v1/privacy | `{version,purpose,items,retention,withdrawal}` 고정 버전 안내 |
 | POST /v1/auth/development | `{identity:"member"\|"outsider"}`. 개발 모드만 허용. 세션 회전 후 /me 응답 |
 | POST /v1/auth/logout | 인증 세션 회수, 204 |
 | GET /v1/me | `{id,displayName,identityProvider,membership:{status,roleLabel,verifiedUntil},minecraft:{uuid,name}\|null,discordReference:{id,verificationStatus:"self_reported",updatedAt}\|null,csrfToken}` |
 | GET /v1/me/servers | `{servers:[{id,label,sensitive?}]}` |
+| GET /v1/me/minecraft-skin | 자신의 연결된 스킨 `{dataUrl,model}`. 상류 장애나 미연결은 null |
 | PUT /v1/me/discord-id | `{id:"123..."}` → 자기신고 reference |
 | DELETE /v1/me/discord-id | 204. 이후 /me의 discordReference는 null |
 | POST /v1/link-sessions/:id/inspect | `{token}`. 익명 세션+CSRF 허용. `{id,minecraftName,minecraftUuid,status,expiresAt,webConfirmed,gameConfirmed}` |
-| POST /v1/link-sessions/:id/web-confirm | `{token}`. 인증한 회원 세션+CSRF. `{id,status,expiresAt}` |
-| POST /v1/auth/university/start | `{link?:{id,token}}` + CSRF → `{url,expiresIn:300}`. university 모드만 학교로 이동 |
+| POST /v1/link-sessions/:id/skin | `{token}`. 세션+CSRF+링크 소유 확인 → `{dataUrl,model}` |
+| POST /v1/link-sessions/:id/web-confirm | `{token,consent:{accepted:true,version}}`. 인증한 회원 세션+CSRF. `{id,status,expiresAt}` |
+| POST /v1/auth/university/start | 사용자 `{link?:{id,token},consent:{accepted:true,version}}` + CSRF → `{url,expiresIn:300}`. 관리자 로그인은 consent 입력 불필요 |
 | GET /v1/auth/university/callback/:state | 학교 `sToken,sIdno` query. 현재 브라우저 세션·단회 state·학번 검증 후 새 세션 및 303 clean redirect |
 | GET /v1/auth/university/callback | state 없는 구형 경로는 비활성 |
 | GET /v1/admin/session | 학교 로그인·등록·실제 MFA 상태, `schoolVerified`, `mfaRequired`, 최종 접근 여부 `authorized`, 최초 등록 가능 여부 |
@@ -32,6 +35,8 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | GET /v1/admin/audit | 최근 감사 기록 100개와 변경 운영자 |
 
 연결 토큰은 `/link/:id#token=...` fragment로만 웹에 전달하며 웹에서 즉시 URL에서 제거합니다. 검사 요청은 POST body를 사용합니다. API는 요청 URL·쿠키·본문을 기록하지 않습니다. 쿠키 Domain은 설정하지 않습니다. 사용자/관리자 쿠키 이름을 분리하고 각각의 세션에 host+port audience를 기록합니다. HTTPS origin에는 Secure를 설정하며 운영 모드는 HTTPS origin만 허용합니다.
+
+`/me`는 현재 안내 버전의 `privacyConsent:{version,accepted,acceptedAt}`도 반환합니다. 사용자 학교 로그인에 연결 문맥이 있으면 성공한 새 세션으로 웹 확인까지 처리합니다. 게임 연결 단계만 실패하면 학교 로그인은 유지하고 `link_error` 코드와 함께 같은 링크로 복귀합니다. 동의 영수증과 스킨의 접근·상류 제한은 [개인정보와 스킨 문서](privacy-and-skins.md)를 참조합니다.
 
 ## 게임 서비스
 

@@ -1,4 +1,4 @@
-const {test,before,after,beforeEach}=require('node:test');
+const {test,beforeEach,afterEach}=require('node:test');
 const assert=require('node:assert/strict');
 const {randomUUID}=require('node:crypto');
 const request=require('supertest');
@@ -10,6 +10,9 @@ Object.assign(process.env,{NODE_ENV:'test',PASSPORT_AUTH_MODE:'development',WEB_
 const {createApp}=require('../dist/app');
 const {PassportService}=require('../dist/passport.service');
 const {seedDevelopment}=require('../dist/seed-development');
+const {privacyNotice}=require('../dist/privacy');
+const skinModule=require('../dist/integrations/minecraft-skin');
+const consent={accepted:true,version:privacyNotice.version};
 let app,db,http;
 const service=r=>r.set('Authorization',`Bearer ${process.env.API_SERVICE_TOKEN}`);
 const host=r=>r.set('Host','localhost:5173');
@@ -26,13 +29,16 @@ async function createLink(uuid=randomUUID()) {
  const created=await service(request(http).post('/v1/link-sessions')).send(identity).expect(201);
  return {...created.body,identity,token:new URLSearchParams(new URL(created.body.url).hash.slice(1)).get('token')};
 }
-async function webConfirm(link,user,status=200){return browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token}).expect(status);}
+async function webConfirm(link,user,status=200){return browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token,consent}).expect(status);}
 async function gameConfirm(link,status=200,body=link.identity){const {minecraftUuid,gameSessionId}=body;return service(request(http).post(`/v1/link-sessions/${link.id}/game-confirm`)).send({minecraftUuid,gameSessionId}).expect(status);}
 async function gameInspect(link,status=200,body=link.identity){const {minecraftUuid,gameSessionId}=body;return service(request(http).post(`/v1/link-sessions/${link.id}/game-inspect`)).send({minecraftUuid,gameSessionId}).expect(status);}
 async function getPolicy(uuid){return (await service(request(http).get(`/v1/minecraft/policies/${uuid}`)).expect(200)).body;}
-before(async()=>{app=await createApp();db=app.get(PassportService).db;http=app.getHttpServer();});
-after(async()=>{await app?.close();});
-beforeEach(async()=>{await db.$executeRawUnsafe('TRUNCATE TABLE "AuditEvent", "PolicyEvent", "LinkSession", "WebSession", "MinecraftIdentity", "Subject" RESTART IDENTITY CASCADE');await seedDevelopment(db);});
+afterEach(async()=>{await app?.close();});
+beforeEach(async()=>{
+ // Each test owns its limiter state; production limits remain fully enabled.
+ app=await createApp();db=app.get(PassportService).db;http=app.getHttpServer();
+ await db.$executeRawUnsafe('TRUNCATE TABLE "AuditEvent", "PolicyEvent", "LinkSession", "WebSession", "MinecraftIdentity", "Subject" RESTART IDENTITY CASCADE');await seedDevelopment(db);
+});
 test('service endpoints reject missing or bad credentials and unknown UUID fails closed',async()=>{
  const uuid=randomUUID();await request(http).get(`/v1/minecraft/policies/${uuid}`).expect(401);
  await request(http).get(`/v1/minecraft/policies/${uuid}`).set('Authorization','Bearer wrong').expect(401);
@@ -99,7 +105,7 @@ test('game inspection rejects expired and cancelled requests, including already 
 });
 test('expired link, expired web session, substituted token and absent CSRF fail',async()=>{
  const user=await login();const link=await createLink();
- await browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:'x'.repeat(43)}).expect(404);
+ await browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:'x'.repeat(43),consent}).expect(404);
  await host(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`)).set('Cookie',user.cookie).set('Origin','http://localhost:5173').send({token:link.token}).expect(403);
  await db.linkSession.update({where:{id:link.id},data:{expiresAt:new Date(Date.now()-1000)}});await webConfirm(link,user,410);await gameConfirm(link,410);
  const current=await createLink();await webConfirm(current,user);await db.webSession.updateMany({data:{expiresAt:new Date(Date.now()-1000)}});await gameConfirm(current,401);assert.equal((await getPolicy(current.identity.minecraftUuid)).status,'unlinked');
@@ -149,6 +155,47 @@ test('portal and admin cookies coexist on the same hostname, and TTL removes exp
 test('school provider and admin remain explicitly unavailable',async()=>{
  const user=await login();await browser(request(http).post('/v1/auth/university/start'),user).send({}).expect(503);
  await browser(request(http).get('/v1/admin/overview'),user).expect(403);
+});
+test('privacy notice and explicit current consent gate linking and create one immutable receipt',async()=>{
+ const notice=await request(http).get('/v1/privacy').expect(200);assert.equal(notice.body.version,privacyNotice.version);assert.ok(notice.body.items.length);assert.match(notice.body.retention,/백업/);
+ const user=await login();assert.equal(user.profile.privacyConsent.accepted,false);const link=await createLink();
+ for(const input of [undefined,{accepted:false,version:privacyNotice.version}]){
+  const result=await browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token,consent:input}).expect(400);assert.equal(result.body.code,'consent_required');
+ }
+ const stale=await browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token,consent:{accepted:true,version:'previous-version'}}).expect(409);assert.equal(stale.body.code,'consent_version_mismatch');
+ assert.equal(await db.consentReceipt.count(),0);assert.equal((await db.linkSession.findUnique({where:{id:link.id}})).webConfirmedAt,null);
+ await webConfirm(link,user);await gameConfirm(link);await webConfirm(link,user,409);
+ const rows=await db.consentReceipt.findMany();assert.equal(rows.length,1);assert.equal(rows[0].source,'minecraft_link');assert.equal(rows[0].contextId,link.id);assert.equal(rows[0].version,privacyNotice.version);
+ const me=await browser(request(http).get('/v1/me'),user).expect(200);assert.equal(me.body.privacyConsent.accepted,true);assert.ok(me.body.privacyConsent.acceptedAt);
+});
+test('skin routes require the owning session or bound link capability and never change linking state',async()=>{
+ const original=skinModule.minecraftSkin;let calls=0;const seen=[];
+ skinModule.minecraftSkin=async uuid=>{calls++;seen.push(uuid);return{dataUrl:null,model:null};};
+ try{
+  const anon=await host(request(http).get('/v1/auth/session')).expect(200);const anonymous={cookie:anon.headers['set-cookie'][0].split(';')[0],csrf:anon.body.csrfToken};const link=await createLink();
+  await browser(request(http).post(`/v1/link-sessions/${link.id}/skin`),anonymous).send({token:'x'.repeat(43)}).expect(404);
+  await host(request(http).post(`/v1/link-sessions/${link.id}/skin`)).set('Cookie',anonymous.cookie).set('Origin','http://localhost:5173').send({token:link.token}).expect(403);assert.equal(calls,0);
+  assert.deepEqual((await browser(request(http).post(`/v1/link-sessions/${link.id}/skin`),anonymous).send({token:link.token}).expect(200)).body,{dataUrl:null,model:null});assert.deepEqual(seen,[link.identity.minecraftUuid]);
+  assert.equal((await db.linkSession.findUnique({where:{id:link.id}})).webConfirmedAt,null);assert.equal(await db.consentReceipt.count(),0);
+  await host(request(http).get('/v1/me/minecraft-skin')).set('Cookie',anonymous.cookie).expect(401);
+  const user=await login();assert.equal((await browser(request(http).get('/v1/me/minecraft-skin'),user).expect(200)).body.dataUrl,null);assert.equal(calls,1);
+  await webConfirm(link,user);await gameConfirm(link);await browser(request(http).get('/v1/me/minecraft-skin'),user).expect(200);assert.equal(calls,2);
+  const outsider=await login('outsider');await browser(request(http).get('/v1/me/minecraft-skin'),outsider).query({uuid:link.identity.minecraftUuid}).expect(200);assert.equal(calls,2);
+  await db.linkSession.update({where:{id:link.id},data:{expiresAt:new Date(Date.now()-1)}});await browser(request(http).post(`/v1/link-sessions/${link.id}/skin`),anonymous).send({token:link.token}).expect(410);assert.equal(calls,2);
+ }finally{skinModule.minecraftSkin=original;}
+});
+test('legacy or mismatched consent receipts cannot complete a pending link',async()=>{
+ const user=await login();const other=await login('outsider');
+ for(const mode of ['missing','old-version','wrong-link','wrong-subject']){
+  const link=await createLink();await webConfirm(link,user);
+  const where={subjectId:user.profile.id,source:'minecraft_link',contextId:link.id};
+  if(mode==='missing')await db.consentReceipt.deleteMany({where});
+  else await db.consentReceipt.updateMany({where,data:mode==='old-version'?{version:'obsolete'}:mode==='wrong-link'?{contextId:randomUUID()}:{subjectId:other.profile.id}});
+  const rejected=await gameConfirm(link,403);assert.equal(rejected.body.code,'consent_required');
+  const stored=await db.linkSession.findUnique({where:{id:link.id}});assert.equal(stored.status,'pending');assert.equal(stored.gameConfirmedAt,null);
+  assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:link.identity.minecraftUuid}})).subjectId,null);
+ }
+ assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked'}}),0);
 });
 test('policy events require service identity and recover initial, retained and reset cursors without numeric loss',async()=>{
  await request(http).get('/v1/minecraft/events').expect(401);

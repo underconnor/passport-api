@@ -7,6 +7,8 @@ import { hash, opaqueToken, equal, csrf } from './security';
 import { policyTransaction, serializable } from './database';
 import { startMembershipSync } from './membership-sync';
 import { permittedServers, seedServerRegistry } from './registry';
+import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
+import { minecraftSkin } from './integrations/minecraft-skin';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -99,10 +101,19 @@ export class PassportService {
     return this.profile(subject, token);
   }
   async profile(subject: Subject, token: string) {
-    const minecraft = await this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
-    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    const [minecraft, consent] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } })]);
+    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
+  async myMinecraftSkin(req: Request) {
+    const c = await this.context(req, true);
+    const identity = await this.db.minecraftIdentity.findUnique({ where: { subjectId: c.session.subjectId! }, select: { uuid: true } });
+    return identity ? minecraftSkin(identity.uuid) : { dataUrl: null, model: null };
+  }
+  async linkMinecraftSkin(req: Request, id: string, token: string) {
+    const link = await this.inspectLink(req, id, token);
+    return minecraftSkin(link.minecraftUuid);
+  }
   async logout(req: Request, res: Response) {
     const c = await this.mutation(req);
     await this.db.webSession.deleteMany({ where: { id: c.session.id } });
@@ -178,6 +189,8 @@ export class PassportService {
     const subject = await tx.subject.findUnique({ where: { id: link.subjectId } });
     if (!session || session.expiresAt <= new Date() || session.subjectId !== link.subjectId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
     if (!subject || this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
+    const consent = await tx.consentReceipt.findFirst({ where: { subjectId: subject.id, source: 'minecraft_link', contextId: link.id, version: privacyNotice.version }, select: { id: true } });
+    if (!consent) throw new ForbiddenException({ code: 'consent_required' });
     const previous = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
     if (previous && previous.uuid !== link.minecraftUuid) throw new ConflictException({ code: 'subject_already_linked' });
     const updated = await tx.minecraftIdentity.updateMany({ where: { uuid: link.minecraftUuid, subjectId: null }, data: { subjectId: subject.id, policyVersion: { increment: 1 }, policyFingerprint: '' } });
@@ -188,18 +201,21 @@ export class PassportService {
     return tx.linkSession.update({ where: { id: link.id }, data: { status: 'linked', completedAt: new Date() } });
   }
   summary(link: LinkSession) { return { id: link.id, status: link.status, expiresAt: link.expiresAt.toISOString() }; }
-  async webConfirm(req: Request, id: string, token: string) {
-    const c = await this.mutation(req);
-    const link = await policyTransaction(this.db, async tx => {
+  async confirmWebLink(tx: Prisma.TransactionClient, id: string, token: string, subjectId: string, webSessionId: string, consent: { version: string; acceptedAt: Date }) {
       const found = await tx.linkSession.findUnique({ where: { id } });
       if (!found || !equal(found.tokenHash, hash(token))) throw new NotFoundException({ code: 'link_not_found' });
       this.ensurePending(found);
       if (found.webConfirmedAt) throw new ConflictException({ code: 'web_confirmation_consumed' });
-      const subject = await tx.subject.findUniqueOrThrow({ where: { id: c.session.subjectId! } });
+      const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId } });
       if (this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
-      const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId: c.session.id, webConfirmedAt: new Date() } });
+      await recordConsent(tx, subject.id, 'minecraft_link', id, consent);
+      const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId, webConfirmedAt: new Date() } });
       return this.finishLink(tx, claimed);
-    });
+  }
+  async webConfirm(req: Request, id: string, token: string, input?: ConsentInput) {
+    const c = await this.mutation(req);
+    const consent = requireConsent(input);
+    const link = await policyTransaction(this.db, tx => this.confirmWebLink(tx, id, token, c.session.subjectId!, c.session.id, consent));
     return this.summary(link);
   }
   async gameConfirm(req: Request, id: string, input: { minecraftUuid: string; gameSessionId: string }) {

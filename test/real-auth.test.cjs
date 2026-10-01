@@ -16,6 +16,8 @@ const {studentKey}=require('../dist/integrations/sheets');
 const {applyRosterSnapshot}=require('../dist/membership-sync');
 const {hash}=require('../dist/security');
 const {totpAt}=require('../dist/totp');
+const {privacyNotice}=require('../dist/privacy');
+const consent={accepted:true,version:privacyNotice.version};
 const PORTAL='portal.example.test',ADMIN='admin.example.test';
 const db=new PrismaClient({datasources:{db:{url:database.href}}});
 let app,http,service,verifyCalls;
@@ -28,7 +30,7 @@ function browser(req,user,mutation=false){req=req.set('Host',user.host).set('Coo
 function serviceRequest(req){return req.set('Authorization',`Bearer ${process.env.API_SERVICE_TOKEN}`);}
 async function anonymous(host=PORTAL){const response=await request(http).get('/v1/auth/session').set('Host',host).expect(200);return{host,cookie:cookieOf(response),csrf:response.body.csrfToken,response};}
 async function begin(user,input={}) {
- const result=await browser(request(http).post('/v1/auth/university/start'),user,true).send(input).expect(200);
+ const result=await browser(request(http).post('/v1/auth/university/start'),user,true).send({...user.host===PORTAL?{consent}:{},...input}).expect(200);
  const callback=new URL(new URL(result.body.url).searchParams.get('apiReturnUrl'));
  return{path:callback.pathname,callback,result};
 }
@@ -105,10 +107,52 @@ test('school failure consumes its request and expired browser session cannot fin
 test('school return preserves encrypted game-link context only in the URL fragment',async()=>{
  const created=await serviceRequest(request(http).post('/v1/link-sessions')).send({minecraftUuid:randomUUID(),minecraftName:'LinkTest',gameSessionId:randomUUID()}).expect(201);
  const linkToken=new URLSearchParams(new URL(created.body.url).hash.slice(1)).get('token');const user=await anonymous();
- await browser(request(http).post('/v1/auth/university/start'),user,true).send({link:{id:created.body.id,token:'x'.repeat(43)}}).expect(403);
+ await browser(request(http).post('/v1/auth/university/start'),user,true).send({link:{id:created.body.id,token:'x'.repeat(43)},consent}).expect(403);
  const attempt=await begin(user,{link:{id:created.body.id,token:linkToken}});const stored=await db.universityAuthRequest.findFirst();assert.ok(stored.returnContext);assert.ok(!stored.returnContext.includes(linkToken));assert.ok(!attempt.result.body.url.includes(linkToken));
  const result=await callback(user,attempt);assert.equal(result.headers.location,`/link/${created.body.id}#token=${linkToken}`);
- assert.equal((await db.linkSession.findUnique({where:{id:created.body.id}})).status,'pending');
+ const linked=await db.linkSession.findUnique({where:{id:created.body.id}});assert.equal(linked.status,'pending');assert.ok(linked.webConfirmedAt);assert.ok(linked.webSessionId);
+ assert.equal(await db.consentReceipt.count({where:{source:'portal_login'}}),1);assert.equal(await db.consentReceipt.count({where:{source:'minecraft_link'}}),1);
+});
+test('portal school login requires current consent while administrator login remains a separate flow',async()=>{
+ const user=await anonymous();
+ for(const input of [undefined,{accepted:false,version:privacyNotice.version}])assert.equal((await browser(request(http).post('/v1/auth/university/start'),user,true).send({consent:input}).expect(400)).body.code,'consent_required');
+ assert.equal((await browser(request(http).post('/v1/auth/university/start'),user,true).send({consent:{accepted:true,version:'old'}}).expect(409)).body.code,'consent_version_mismatch');assert.equal(await db.universityAuthRequest.count(),0);
+ const attempt=await begin(user);const stored=await db.universityAuthRequest.findFirst();assert.equal(stored.consentVersion,privacyNotice.version);assert.ok(stored.consentAcceptedAt);
+ await db.universityAuthRequest.update({where:{id:stored.id},data:{consentVersion:'old'}});
+ assert.equal((await callback(user,attempt)).headers.location,'/?auth_error=consent_version_mismatch');assert.equal(verifyCalls,0);assert.equal(await db.consentReceipt.count(),0);
+ const admin=await login('99990001',ADMIN);assert.equal(admin.profile.privacyConsent.accepted,false);assert.equal(await db.consentReceipt.count(),0);
+});
+test('school callback automatically completes an already game-confirmed request with new browser binding and one receipt per purpose',async()=>{
+ const game={minecraftUuid:randomUUID(),minecraftName:'AutoLinkTest',gameSessionId:randomUUID()};const created=await serviceRequest(request(http).post('/v1/link-sessions')).send(game).expect(201);
+ const token=new URLSearchParams(new URL(created.body.url).hash.slice(1)).get('token');const user=await anonymous();const oldCookie=user.cookie;const attempt=await begin(user,{link:{id:created.body.id,token}});
+ await serviceRequest(request(http).post(`/v1/link-sessions/${created.body.id}/game-confirm`)).send({minecraftUuid:game.minecraftUuid,gameSessionId:game.gameSessionId}).expect(200);
+ const result=await callback(user,attempt);assert.equal(result.headers.location,`/link/${created.body.id}#token=${token}`);user.cookie=cookieOf(result);assert.notEqual(user.cookie,oldCookie);
+ const me=await browser(request(http).get('/v1/me'),user).expect(200);assert.equal(me.body.privacyConsent.accepted,true);assert.equal(me.body.minecraft.uuid,game.minecraftUuid);
+ assert.equal((await db.linkSession.findUnique({where:{id:created.body.id}})).status,'linked');assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked'}}),1);assert.equal(await db.consentReceipt.count(),2);
+ assert.equal((await policy(game.minecraftUuid)).status,'active');
+});
+test('expired or cancelled link completion preserves successful school login without granting a game identity',async()=>{
+ for(const mode of ['expired','cancelled']){
+  const game={minecraftUuid:randomUUID(),minecraftName:'FailedAutoLink',gameSessionId:randomUUID()};const created=await serviceRequest(request(http).post('/v1/link-sessions')).send(game).expect(201);
+  const token=new URLSearchParams(new URL(created.body.url).hash.slice(1)).get('token');const user=await anonymous();const attempt=await begin(user,{link:{id:created.body.id,token}});
+  await db.linkSession.update({where:{id:created.body.id},data:mode==='expired'?{expiresAt:new Date(Date.now()-1)}:{status:'cancelled'}});
+  const result=await callback(user,attempt);const location=new URL(result.headers.location,origin(PORTAL));assert.equal(location.searchParams.get('link_error'),mode==='expired'?'link_expired':'link_consumed');assert.equal(location.pathname,`/link/${created.body.id}`);assert.equal(new URLSearchParams(location.hash.slice(1)).get('token'),token);
+  user.cookie=cookieOf(result);assert.ok(user.cookie);await browser(request(http).get('/v1/me'),user).expect(200);
+  assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:game.minecraftUuid}})).subjectId,null);assert.equal(await db.consentReceipt.count({where:{contextId:created.body.id}}),0);
+ }
+ assert.equal(await db.consentReceipt.count({where:{source:'portal_login'}}),2);
+});
+test('failed membership or link transaction never rolls back the completed school login or leaks database errors',async()=>{
+ for(const mode of ['nonmember','database-failure']){
+  const game={minecraftUuid:randomUUID(),minecraftName:'FailedMembership',gameSessionId:randomUUID()};const created=await serviceRequest(request(http).post('/v1/link-sessions')).send(game).expect(201);
+  const token=new URLSearchParams(new URL(created.body.url).hash.slice(1)).get('token');const user=await anonymous();const attempt=await begin(user,{link:{id:created.body.id,token}});
+  const original=service.confirmWebLink;
+  if(mode==='database-failure')service.confirmWebLink=async tx=>{await tx.$executeRawUnsafe('SELECT * FROM "deliberately_absent_consent_test_table"');throw new Error('unreachable');};
+  let result;try{result=await callback(user,attempt,mode==='nonmember'?'99990099':'99990001');}finally{service.confirmWebLink=original;}
+  const location=new URL(result.headers.location,origin(PORTAL));assert.equal(location.searchParams.get('link_error'),mode==='nonmember'?'membership_required':'link_confirmation_failed');assert.ok(!result.headers.location.includes('deliberately_absent'));
+  user.cookie=cookieOf(result);await browser(request(http).get('/v1/me'),user).expect(200);assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:game.minecraftUuid}})).subjectId,null);
+ }
+ assert.equal(await db.consentReceipt.count({where:{source:'portal_login'}}),2);assert.equal(await db.consentReceipt.count({where:{source:'minecraft_link'}}),0);
 });
 test('duplicate callback races verify once and create exactly one school session',async()=>{
  const user=await anonymous();const attempt=await begin(user);const token='synthetic-race-'+randomBytes(24).toString('hex');

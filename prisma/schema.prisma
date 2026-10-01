@@ -29,6 +29,7 @@ model Subject {
   minecraft MinecraftIdentity?
   links LinkSession[]
   administrator Administrator?
+  consents ConsentReceipt[]
 }
 model WebSession {
   id String @id @default(uuid()) @db.Uuid
@@ -93,10 +94,24 @@ model UniversityAuthRequest {
   webSessionId String @db.Uuid
   webSession WebSession @relation(fields: [webSessionId], references: [id], onDelete: Cascade)
   returnContext String?
+  consentVersion String?
+  consentAcceptedAt DateTime?
   status String @default("pending")
   expiresAt DateTime
   createdAt DateTime @default(now())
   @@index([expiresAt])
+}
+model ConsentReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  subjectId String @db.Uuid
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  version String
+  source String
+  contextId String @db.Uuid
+  acceptedAt DateTime
+  createdAt DateTime @default(now())
+  @@unique([subjectId, version, source, contextId])
+  @@index([subjectId, version, acceptedAt])
 }
 model ConsumedUniversityToken {
   tokenHash String @id

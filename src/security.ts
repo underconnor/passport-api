@@ -9,9 +9,12 @@ export const uuidSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}
 export const gameIdentitySchema = z.object({ minecraftUuid: uuidSchema, gameSessionId: z.string().min(16).max(128) }).strict();
 export const createLinkSchema = gameIdentitySchema.extend({ minecraftName: z.string().regex(/^[A-Za-z0-9_]{1,16}$/) });
 export const linkTokenSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
+export const consentSchema = z.object({ accepted: z.boolean(), version: z.string().min(1).max(64) }).strict();
+export const webLinkConfirmSchema = linkTokenSchema.extend({ consent: consentSchema.optional() });
 export const developmentIdentitySchema = z.object({ identity: z.enum(['member', 'outsider']) }).strict();
 export const discordSchema = z.object({ id: z.string().regex(/^[1-9][0-9]{0,19}$/).refine(s => /^[1-9][0-9]{0,19}$/.test(s) && BigInt(s) <= 18446744073709551615n) }).strict();
-export const universityStartSchema = z.object({ link: z.object({ id: uuidSchema, token: linkTokenSchema.shape.token }).strict().optional() }).strict();
+export const universityLinkContextSchema = z.object({ id: uuidSchema, token: linkTokenSchema.shape.token }).strict();
+export const universityStartSchema = z.object({ link: universityLinkContextSchema.optional(), consent: consentSchema.optional() }).strict();
 export const universityCallbackSchema = z.object({ sToken: z.string().min(16).max(8192), sIdno: z.string().regex(/^\d{8,10}$/) });
 export const enrollmentSchema = z.object({ bootstrapToken: z.string().min(43).max(128) }).strict();
 export const mfaSchema = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();

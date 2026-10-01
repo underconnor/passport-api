@@ -4,17 +4,19 @@ import { NestFactory } from '@nestjs/core';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import { PassportService } from './passport.service';
-import { accessSchema, createLinkSchema, developmentIdentitySchema, discordSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema } from './security';
+import { accessSchema, createLinkSchema, developmentIdentitySchema, discordSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema, webLinkConfirmSchema } from './security';
 import { startUniversity, finishUniversity } from './university-auth';
 import { adminAudit, adminContext, adminMembers, adminOverview, adminStatus, beginEnrollment, setMemberAccess, unlinkMember, verifyAdminMfa } from './admin';
 import { RosterSyncError } from './membership-sync';
 import { UniversityVerificationError } from './integrations/usaint';
 import { adminServers, heartbeatServers, setServerSettings } from './registry';
+import { privacyNotice } from './privacy';
 
 @Controller()
 class PassportController {
   constructor(private readonly passport: PassportService) {}
   @Get('healthz') async health() { await this.passport.db.$queryRaw`SELECT 1`; return { status: 'ok', authMode: this.passport.config.authMode }; }
+  @Get('v1/privacy') privacy() { return privacyNotice; }
   @Get('v1/auth/session') session(@Req() req: Request, @Res({ passthrough: true }) res: Response) { return this.passport.session(req, res); }
   @Post('v1/auth/development') @HttpCode(200) development(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: unknown) { return this.passport.developmentLogin(req, res, parse(developmentIdentitySchema, body).identity); }
   @Post('v1/auth/university/start') @HttpCode(200) universityStart(@Req() req: Request, @Body() body: unknown) { return startUniversity(this.passport, req, parse(universityStartSchema, body)); }
@@ -32,13 +34,15 @@ class PassportController {
   }
   @Post('v1/auth/logout') @HttpCode(204) logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) { return this.passport.logout(req, res); }
   @Get('v1/me') me(@Req() req: Request) { return this.passport.me(req); }
+  @Get('v1/me/minecraft-skin') mySkin(@Req() req: Request) { return this.passport.myMinecraftSkin(req); }
   @Get('v1/me/servers') servers(@Req() req: Request) { return this.passport.myServers(req); }
   @Put('v1/me/discord-id') discord(@Req() req: Request, @Body() body: unknown) { return this.passport.discord(req, parse(discordSchema, body).id); }
   @Delete('v1/me/discord-id') @HttpCode(204) async removeDiscord(@Req() req: Request) { await this.passport.discord(req, null); }
   @Post('v1/link-sessions') createLink(@Req() req: Request, @Body() body: unknown) { return this.passport.createLink(req, parse(createLinkSchema, body)); }
   @Post('v1/link-sessions/:id/inspect') @HttpCode(200) inspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectLink(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
+  @Post('v1/link-sessions/:id/skin') @HttpCode(200) linkSkin(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.linkMinecraftSkin(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
   @Post('v1/link-sessions/:id/game-inspect') @HttpCode(200) gameInspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectGameLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
-  @Post('v1/link-sessions/:id/web-confirm') @HttpCode(200) webConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.webConfirm(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
+  @Post('v1/link-sessions/:id/web-confirm') @HttpCode(200) webConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { const input = parse(webLinkConfirmSchema, body); return this.passport.webConfirm(req, parse(uuidSchema, id), input.token, input.consent); }
   @Post('v1/link-sessions/:id/game-confirm') @HttpCode(200) gameConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.gameConfirm(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Delete('v1/link-sessions/:id') @HttpCode(204) cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.cancelLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Get('v1/minecraft/policies/:uuid') policy(@Req() req: Request, @Param('uuid') uuid: string) { return this.passport.policy(req, parse(uuidSchema, uuid)); }

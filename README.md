@@ -16,6 +16,7 @@
 - 관리자 학교 인증 + 최초 등록 코드 + 기본 필수 TOTP, 명시적 `ADMIN_MFA_REQUIRED=false` 옵션, 회원 조회·접속 정지·서버 범위 제한·Minecraft 연결 해제·감사 조회
 - 서비스 인증으로 보호하는 outbox cursor API, 유실·보관 기간 경과·DB 복원 시 전체 재검사 신호
 - Paper·Velocity heartbeat를 통한 비활성 서버 발견, DB 기반 서버 설정, 명부/전체 회원/선택 회원 범위와 개인 제한의 교집합
+- 고정 버전 개인정보 안내·명시적 동의 이력, 학교 로그인 후 새 세션에 묶인 자동 웹 확인, 같은 origin에서 제공하는 Mojang 스킨
 - 만료 세션 정리와 단일 인스턴스용 요청 제한
 
 실제 학교·명부·관리자 코드가 연결되어 있습니다. 학교 비밀번호는 이 API에서 받지 않으며, 학교에서 받은 토큰·세션 쿠키·원본 HTML은 영속 저장하거나 로그에 남기지 않습니다. 실제 학교 계정의 콜백 왕복과 정품 게임 클라이언트의 전체 접속 QA는 별도 확인해야 합니다. 공개 운영에는 HTTPS와 분리된 비밀값을 사용하고 개발 인증을 끕니다.
@@ -57,6 +58,6 @@ docker build -t passport-api:local .
 
 이미지는 비특권 사용자로 실행하며 `/healthz`에서 DB 연결을 확인합니다. 스키마 적용과 fixture 생성은 서버 시작에 자동으로 포함하지 않습니다. 의존성은 lockfile로 고정합니다. Prisma CLI의 `deepmerge-ts` 간접 의존성은 보안 수정 버전 8.0.0으로 재정의했고 생성·migration·빌드를 검증했습니다.
 
-[실행 API와 환경 변수](docs/runtime-api.md) · [서버 발견과 설정](docs/server-registry.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
+[실행 API와 환경 변수](docs/runtime-api.md) · [개인정보와 스킨](docs/privacy-and-skins.md) · [서버 발견과 설정](docs/server-registry.md) · [Sheets 동기화](docs/sheets-integration.md) · [학교 파서](docs/usaint-integration.md) · [남은 구현](docs/implementation-plan.md)
 
 공개 저장소의 CI·빌드는 비공개 계약 저장소 없이 독립적으로 동작합니다. 현재 Minecraft 응답 계약 식별자는 `0.1.0-draft`입니다.
