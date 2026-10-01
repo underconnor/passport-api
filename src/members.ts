@@ -7,6 +7,7 @@ import { adminContext } from './admin';
 import { policyTransaction } from './database';
 import { discordProfile, projectDiscordIdentity } from './discord-policy';
 import { studentKey } from './integrations/sheets';
+import { presenceDto } from './game-identity';
 import { equal, hash } from './security';
 
 type Account = Subject & { minecraft: MinecraftIdentity | null; discordIdentity: DiscordIdentity | null; administrator: Administrator | null };
@@ -44,9 +45,10 @@ export async function adminMembers(p: PassportService, req: Request, input: Memb
   const [rows, total, servers] = await p.db.$transaction([
     p.db.subject.findMany({ where, orderBy, skip: offset, take: input.limit + 1, include: { minecraft: true, administrator: true, discordIdentity: { include: { roles: true } } } }), p.db.subject.count({ where }), p.db.serverRecord.findMany({ orderBy: { id: 'asc' } }),
   ]);
+  const presences = await p.db.playerPresence.findMany({ where: { minecraftUuid: { in: rows.flatMap(row => row.minecraft ? [row.minecraft.uuid] : []) } } });
   const members = await Promise.all(rows.slice(0, input.limit).map(async account => ({
     id: account.id, displayName: account.displayName, department: account.department, admissionYear: account.admissionYear, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, verifiedUntil: account.verifiedUntil, universityVerifiedUntil: account.universityVerifiedUntil, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, discordId: account.discordId, minecraft: account.minecraft ? { uuid: account.minecraft.uuid, name: account.minecraft.name } : null,
-    createdAt: account.createdAt, revision: accountRevision(account), administrator: account.administrator?.enabled ?? false,
+    presence: presenceDto(presences.find(row => row.minecraftUuid === account.minecraft?.uuid), servers, now), createdAt: account.createdAt, revision: accountRevision(account), administrator: account.administrator?.enabled ?? false,
     discordConnection: await discordProfile(p.db, account.discordIdentity, p.config.discord), eligibleServerIds: p.gameServers({ ...account, accessSuspended: false }, servers, now, false).map(server => server.id),
   })));
   return { members, total, nextCursor: rows.length > input.limit ? nextCursor(input, offset + input.limit, p.config.sessionSecret) : null };

@@ -3,7 +3,7 @@ import type { Request } from 'express';
 import type { PassportService } from './passport.service';
 import { policyTransaction, serializable } from './database';
 import { adminContext } from './admin';
-import { gameConsent } from './game-identity';
+import { gameConsent, presenceDto } from './game-identity';
 import { hash } from './security';
 
 export const counterNames = ['playSeconds', 'blocksBroken', 'blocksPlaced', 'damageTakenMilli', 'deaths', 'mobKills'] as const;
@@ -57,6 +57,11 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
     let records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
     if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId } }); records = subject ? p.gameServers(subject, records) : []; }
     const playerCount = subjectId ? undefined : (await tx.activityGeneration.findMany({ distinct: ['subjectId'], select: { subjectId: true } })).length;
-    return { available: true, totals, servers: rows.flatMap(row => { const server = records.find(server => server.id === row.serverId); return server ? [{ ...row, label: server.label }] : []; }), ...(playerCount === undefined ? {} : { playerCount }) };
+    const identity = subjectId ? await tx.minecraftIdentity.findUnique({ where: { subjectId }, select: { uuid: true } }) : null;
+    const now = new Date();
+    const presences = await tx.playerPresence.findMany({ where: subjectId ? { minecraftUuid: identity?.uuid ?? '00000000-0000-0000-0000-000000000000' } : { expiresAt: { gt: now } } });
+    const visible = presences.filter(row => row.expiresAt > now && records.some(server => server.id === row.serverId));
+    const servers = records.map(server => ({ serverId: server.id, label: server.label, ...(rows.find(row => row.serverId === server.id) ?? empty()), onlinePlayerCount: visible.filter(row => row.serverId === server.id).length }));
+    return { available: true, totals, servers, ...(playerCount === undefined ? { presence: presenceDto(presences[0], records, now) } : { playerCount, onlinePlayerCount: visible.length }) };
   });
 }

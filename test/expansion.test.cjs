@@ -126,3 +126,14 @@ test('statistics are owner or administrator only and unauthorized server labels 
 test('database rejects unknown consent sources and malformed admission-year hints',async()=>{
  const owner=await subject();await assert.rejects(()=>db.consentReceipt.create({data:{subjectId:owner.id,version:privacyNotice.version,source:'invented',contextId:randomUUID(),acceptedAt:new Date()}}));await assert.rejects(()=>db.subject.update({where:{id:owner.id},data:{admissionYear:'XX'}}));assert.equal((await db.subject.findUnique({where:{id:owner.id}})).admissionYear,null);
 });
+
+test('web member rows and private statistics expose current presence with per-server totals and scope hiding',async()=>{
+ const a=await linked(),b=await linked({displayName:'별도회원'});await db.subject.update({where:{id:b.owner.id},data:{allowedServerIds:['survival']}});
+ for(const[identity,serverId]of[[a.minecraft,'lobby'],[b.minecraft,'survival']])await service(request(http).post('/v1/minecraft/presence')).send({serverId,observedAt:new Date().toISOString(),players:[identity.uuid]}).expect(200);
+ const listed=(await browser(request(http).get('/v1/admin/members').query({q:a.minecraft.name})).expect(200)).body.members.find(row=>row.id===a.owner.id);assert.equal(listed.presence.online,true);assert.equal(listed.presence.serverId,'lobby');assert.ok(listed.presence.serverLabel);assert.ok(listed.presence.lastSeenAt);
+ const own=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.equal(own.presence.online,true);assert.equal(own.presence.serverId,'lobby');assert.deepEqual(own.servers.map(row=>row.serverId),['lobby']);assert.equal(own.servers[0].onlinePlayerCount,1);
+ const all=(await browser(request(http).get('/v1/admin/stats')).expect(200)).body;assert.equal(all.onlinePlayerCount,2);assert.equal(all.servers.find(row=>row.serverId==='lobby').onlinePlayerCount,1);assert.equal(all.servers.find(row=>row.serverId==='survival').onlinePlayerCount,1);assert.equal(all.totals.playSeconds,0);
+ await db.subject.update({where:{id:a.owner.id},data:{scopeRestricted:true,scopeLimit:[]}});const hidden=(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;assert.deepEqual(hidden.presence,{online:false,serverId:null,serverLabel:null,lastSeenAt:null});assert.equal(hidden.servers.length,0);
+ const adminDetail=(await browser(request(http).get(`/v1/admin/members/${a.owner.id}/stats`)).expect(200)).body;assert.equal(adminDetail.presence.online,true);assert.equal(adminDetail.presence.serverId,'lobby');
+ await db.playerPresence.updateMany({data:{expiresAt:new Date(0)}});assert.equal((await browser(request(http).get('/v1/admin/stats')).expect(200)).body.onlinePlayerCount,0);
+});

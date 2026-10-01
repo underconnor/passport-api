@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import type { Prisma, Subject } from '@prisma/client';
+import type { Prisma, Subject, PlayerPresence } from '@prisma/client';
 import type { Request } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { PassportService } from './passport.service';
@@ -13,6 +13,11 @@ export async function gameConsent(tx: Prisma.TransactionClient, subjectId: strin
 }
 export function gameName(name: string) { try { return universityName(name, false); } catch { return ''; } }
 export function schoolActive(subject: Subject, now = new Date()) { return subject.identityProvider === 'usaint' && !subject.accessSuspended && subject.membershipStatus !== 'suspended' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now); }
+export function presenceDto(presence: PlayerPresence | null | undefined, servers: { id: string; label: string }[], now = new Date()) {
+  const server = presence ? servers.find(row => row.id === presence.serverId) : null;
+  const online = Boolean(presence && server && presence.expiresAt > now);
+  return { online, serverId: online ? server!.id : null, serverLabel: online ? server!.label : null, lastSeenAt: server && presence ? presence.observedAt.toISOString() : null };
+}
 export async function renewPrivacyConsent(p: PassportService, req: Request, input: ConsentInput) {
   const context = await p.mutation(req), consent = requireConsent(input), subjectId = context.session.subjectId!;
   return policyTransaction(p.db, async tx => {
