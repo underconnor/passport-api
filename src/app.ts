@@ -4,11 +4,12 @@ import { NestFactory } from '@nestjs/core';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import { PassportService } from './passport.service';
-import { accessSchema, createLinkSchema, developmentIdentitySchema, discordSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, universityCallbackSchema, universityStartSchema, uuidSchema } from './security';
+import { accessSchema, createLinkSchema, developmentIdentitySchema, discordSchema, enrollmentSchema, gameIdentitySchema, linkTokenSchema, mfaSchema, parse, rosterSyncSchema, serverHeartbeatSchema, serverIdSchema, serverSettingsSchema, universityCallbackSchema, universityStartSchema, uuidSchema } from './security';
 import { startUniversity, finishUniversity } from './university-auth';
 import { adminAudit, adminContext, adminMembers, adminOverview, adminStatus, beginEnrollment, setMemberAccess, unlinkMember, verifyAdminMfa } from './admin';
 import { RosterSyncError } from './membership-sync';
 import { UniversityVerificationError } from './integrations/usaint';
+import { adminServers, heartbeatServers, setServerSettings } from './registry';
 
 @Controller()
 class PassportController {
@@ -41,13 +42,16 @@ class PassportController {
   @Post('v1/link-sessions/:id/game-confirm') @HttpCode(200) gameConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.gameConfirm(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Delete('v1/link-sessions/:id') @HttpCode(204) cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.cancelLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Get('v1/minecraft/policies/:uuid') policy(@Req() req: Request, @Param('uuid') uuid: string) { return this.passport.policy(req, parse(uuidSchema, uuid)); }
-  @Get('v1/minecraft/servers') registry(@Req() req: Request) { this.passport.service(req); return { servers: this.passport.config.servers }; }
+  @Get('v1/minecraft/servers') async registry(@Req() req: Request) { this.passport.service(req); return { servers: await this.passport.db.serverRecord.findMany({ where: { enabled: true }, orderBy: { id: 'asc' }, select: { id: true, label: true, sensitive: true } }) }; }
+  @Post('v1/minecraft/servers/heartbeat') @HttpCode(200) heartbeat(@Req() req: Request, @Body() body: unknown) { return heartbeatServers(this.passport, req, parse(serverHeartbeatSchema, body)); }
   @Get('v1/minecraft/events') events(@Req() req: Request, @Query('after') after?: string) { return this.passport.policyEvents(req, after); }
   @Get('v1/admin/session') adminSession(@Req() req: Request) { return adminStatus(this.passport, req); }
   @Post('v1/admin/enrollment') @HttpCode(200) enroll(@Req() req: Request, @Body() body: unknown) { return beginEnrollment(this.passport, req, parse(enrollmentSchema, body).bootstrapToken); }
   @Post('v1/admin/mfa') @HttpCode(200) mfa(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: unknown) { return verifyAdminMfa(this.passport, req, res, parse(mfaSchema, body).code); }
   @Get('v1/admin/overview') admin(@Req() req: Request) { return adminOverview(this.passport, req); }
   @Get('v1/admin/members') members(@Req() req: Request, @Query('cursor') cursor?: string) { return adminMembers(this.passport, req, cursor ? parse(uuidSchema, cursor) : undefined); }
+  @Get('v1/admin/servers') adminServers(@Req() req: Request) { return adminServers(this.passport, req); }
+  @Put('v1/admin/servers/:id') serverSettings(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return setServerSettings(this.passport, req, parse(serverIdSchema, id), parse(serverSettingsSchema, body)); }
   @Put('v1/admin/members/:id/access') access(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return setMemberAccess(this.passport, req, parse(uuidSchema, id), parse(accessSchema, body)); }
   @Delete('v1/admin/members/:id/minecraft') unlink(@Req() req: Request, @Param('id') id: string) { return unlinkMember(this.passport, req, parse(uuidSchema, id)); }
   @Get('v1/admin/audit') audit(@Req() req: Request) { return adminAudit(this.passport, req); }

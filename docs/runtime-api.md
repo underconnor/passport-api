@@ -18,12 +18,14 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | POST /v1/auth/university/start | `{link?:{id,token}}` + CSRF → `{url,expiresIn:300}`. university 모드만 학교로 이동 |
 | GET /v1/auth/university/callback/:state | 학교 `sToken,sIdno` query. 현재 브라우저 세션·단회 state·학번 검증 후 새 세션 및 303 clean redirect |
 | GET /v1/auth/university/callback | state 없는 구형 경로는 비활성 |
-| GET /v1/admin/session | 학교 로그인·등록·실제 MFA 상태, `mfaRequired`, 최종 접근 여부 `authorized`, 최초 등록 가능 여부 |
+| GET /v1/admin/session | 학교 로그인·등록·실제 MFA 상태, `schoolVerified`, `mfaRequired`, 최종 접근 여부 `authorized`, 최초 등록 가능 여부 |
 | POST /v1/admin/enrollment | `{bootstrapToken}` → MFA 필수이면 `{mfaRequired:true,secret,otpauthUrl}`, 선택이면 `{mfaRequired:false,enrolled:true}`. 첫 운영자 한 명만 |
 | POST /v1/admin/mfa | `{code}` → 15분 추가 인증, 쿠키·CSRF 회전 |
 | GET /v1/admin/overview | 학교 인증·운영자 권한·설정상 필요한 MFA 후 실제 회원/연결/명부 통계 |
-| GET /v1/admin/members?cursor= | 50명씩 회원·연결·권한 조회 |
-| PUT /v1/admin/members/:id/access | `{suspended,restricted,serverIds}`. 명부 허용 범위 안에서만 제한 |
+| GET /v1/admin/members?cursor= | 50명씩 회원·연결·권한·개인 제한 전 `eligibleServerIds` 조회 |
+| PUT /v1/admin/members/:id/access | `{suspended,restricted,serverIds}`. 서버별 기본 허용 범위 안에서만 제한 |
+| GET /v1/admin/servers | `{servers:[{id,label,sensitive,enabled,accessMode,allowedSubjectIds,paperSeenAt,proxySeenAt,online,proxyAvailable,createdAt,updatedAt}]}` |
+| PUT /v1/admin/servers/:id | `{label,enabled,sensitive,accessMode,allowedSubjectIds,expectedUpdatedAt}` → `{server}`. 설정 충돌은409 `server_changed` |
 | DELETE /v1/admin/members/:id/minecraft | 연결 해제·정책 버전 증가·pending 링크 취소 |
 | POST /v1/admin/roster/preview | 현재 명부 변경 요약·digest·위험 표시 |
 | POST /v1/admin/roster/sync | `{expectedApprovalDigest?}`. 위험 변경은 일치하는 digest 승인 필요 |
@@ -40,7 +42,8 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | POST /v1/link-sessions/:id/game-confirm | `{minecraftUuid,gameSessionId}` → `{id,status:"pending"\|"linked",expiresAt}` |
 | DELETE /v1/link-sessions/:id | 동일 게임 identity body → 204. 취소는 같은 접속 세션에만 허용 |
 | GET /v1/minecraft/policies/:uuid | 계약 `0.1.0-draft`의 최소 정책 |
-| GET /v1/minecraft/servers | `{servers:[{id,label,sensitive?}]}` |
+| GET /v1/minecraft/servers | 활성 서버의 `{servers:[{id,label,sensitive}]}` |
+| POST /v1/minecraft/servers/heartbeat | `{source:"velocity"\|"paper",servers:[{id,label}]}` → `{received,registered}`. 새 서버는 비활성 발견 |
 | GET /v1/minecraft/events?after= | `{cursor,reset,events:[{id,minecraftUuid,policyVersion}]}`. cursor와 id는 64비트 decimal 문자열, 최대 500개 |
 | GET /healthz | DB 연결 확인. `{status:"ok",authMode}` |
 
@@ -66,7 +69,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 | ADMIN_MFA_REQUIRED | 기본 `true`. 명시적 `false`이면 등록된 운영자의 추가 TOTP 단계만 생략. 학교 인증·관리자 등록·CSRF는 유지 |
 | TRUST_PROXY_HOPS | 기본0. Caddy→nginx→API의 고정 격리 배포만2. API 직접 host port 금지 |
 | NODE_ENV | production에서는 개발 인증 금지·HTTPS 필수 |
-| SERVER_REGISTRY_JSON | 최대 64개 `{id,label,sensitive?}` 배열 |
+| SERVER_REGISTRY_JSON | 최초 DB 서버 seed와 명부 입력 검증용 최대64개 `{id,label,sensitive?}`. 기존 DB 설정은 덮어쓰지 않음 |
 | BIND_HOST / PORT | 기본 127.0.0.1 / 3000. 컨테이너 포트 공개 범위는 배포 설정에서 제한 |
 | TEST_DATABASE_URL | 통합 테스트용 전용 DB, 이름이 _test로 끝나야 함 |
 
@@ -77,5 +80,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 `ADMIN_MFA_REQUIRED=false`는 학교 로그인만으로 누구나 관리자가 되는 설정이 아닙니다. 유효한 학교 세션과 `enabled` 관리자 등록이 필요하고 첫 등록에는 같은 bootstrap 비밀을 확인합니다. `authorized`는 접근 허용 여부이며 `mfaVerified`는 실제 TOTP 검증 사실만 나타냅니다. 기존 TOTP 비밀과 검증 기록은 설정 변경으로 지우지 않습니다. TOTP 없이 최초 등록한 관리자가 이후 필수 모드로 바뀌면 `enrollmentPending=true`가 됩니다. 해당 동일 학교 계정이 올바른 bootstrap 코드를 다시 입력해 TOTP를 등록하고 검증해야 접근할 수 있으며, 다른 계정의 재등록은 거절합니다.
 
 이벤트는 정책 변경 알림이며 허가 증거가 아닙니다. `reset=true`이면 접속자를 다시 조회하고, 보존한 UUID 버전보다 낮은 정책은 거절합니다. DB 복원으로 버전이 내려가면 운영자가 버전을 복구해야 합니다.
+
+DB에 보관하는 발견·활성화·회원 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `admin/overview.servers`는 비활성 서버도 이름을 확인할 수 있도록 `{id,label,sensitive,enabled}` 전체 목록을 제공합니다.
 
 이벤트를 생성할 수 있는 정책 트랜잭션은 `policyTransaction`을 사용합니다. 트랜잭션의 첫 SQL에서 공통 PostgreSQL advisory transaction lock을 획득해 ID 발급과 커밋 순서가 어긋나지 않도록 합니다. 웹·게임 연결 완료, 정책 조회 중 변경 감지, 관리자 접근 제한·연결 해제, 명부 반영, 학교 로그인 완료에 적용합니다. 학교 재로그인 시 기존 Minecraft 연결이 있으면 갱신된 학교 유효기간·이름·명부 정보를 소비자가 다시 읽도록 정책 버전과 이벤트를 함께 갱신합니다. 미연결 첫 로그인은 이벤트를 만들지 않습니다. 일반 인증 준비·MFA·읽기 트랜잭션에는 적용하지 않습니다. 잠금은 커밋·롤백 시 자동 해제됩니다. 앞으로 이벤트 생산 경로를 추가할 때도 같은 wrapper를 사용해야 합니다.

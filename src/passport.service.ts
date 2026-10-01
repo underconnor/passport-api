@@ -6,6 +6,7 @@ import { Config, configFromEnv } from './config';
 import { hash, opaqueToken, equal, csrf } from './security';
 import { policyTransaction, serializable } from './database';
 import { startMembershipSync } from './membership-sync';
+import { permittedServers, seedServerRegistry } from './registry';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
@@ -17,6 +18,7 @@ export class PassportService {
   membership!: ReturnType<typeof startMembershipSync>;
   async onModuleInit() {
     await this.db.$connect();
+    await seedServerRegistry(this.db, this.config.servers);
     this.membership = startMembershipSync(this.db);
     this.cleanupTimer = setInterval(() => { void this.cleanup().catch(() => {}); }, 60000);
     this.cleanupTimer.unref();
@@ -118,9 +120,10 @@ export class PassportService {
   async myServers(req: Request) {
     const c = await this.context(req, true);
     const s = c.session.subject!;
-    return { servers: this.accessStatus(s) === 'active' ? this.config.servers.filter(server => s.allowedServerIds.includes(server.id) && (!s.scopeRestricted || s.scopeLimit.includes(server.id))) : [] };
+    const records = await this.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
+    return { servers: permittedServers(s, records, this.accessStatus(s) === 'active').map(({ id, label, sensitive }) => ({ id, label, sensitive })) };
   }
-  accessStatus(subject: Subject, now = new Date()) {
+  accessStatus(subject: Pick<Subject, 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>, now = new Date()) {
     if (subject.accessSuspended || subject.membershipStatus === 'suspended') return 'suspended';
     if (subject.membershipStatus !== 'active') return 'revoked';
     if (subject.verifiedUntil <= now || (subject.identityProvider === 'usaint' && (!subject.universityVerifiedUntil || subject.universityVerifiedUntil <= now))) return 'stale';
@@ -227,7 +230,8 @@ export class PassportService {
       const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: true } });
       const subject = identity.subject;
       const status = !subject ? 'unlinked' : this.accessStatus(subject, now);
-      const allowedServerIds = status === 'active' ? this.config.servers.filter(s => subject!.allowedServerIds.includes(s.id) && (!subject!.scopeRestricted || subject!.scopeLimit.includes(s.id))).map(s => s.id) : [];
+      const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
+      const allowedServerIds = subject ? permittedServers(subject, records, status === 'active').map(server => server.id) : [];
       const display = { roleLabel: status === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: subject ? subject.displayName.slice(0, 40) : identity.name };
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display }));
       let policyVersion = identity.policyVersion;

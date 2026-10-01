@@ -137,7 +137,7 @@ test('optional MFA still requires school login, registered admin, bootstrap and 
  assert.deepEqual(enrolled.body,{enrolled:true,mfaRequired:false});
  const stored=await db.administrator.findUnique({where:{subjectId:user.profile.id}});assert.equal(stored.enabled,true);assert.equal(stored.totpSecret,'');
  const status=await browser(request(http).get('/v1/admin/session'),user).expect(200);
- assert.equal(status.body.authorized,true);assert.equal(status.body.mfaVerified,false);assert.equal(status.body.mfaVerifiedUntil,null);
+ assert.equal(status.body.authorized,true);assert.equal(status.body.schoolVerified,true);assert.equal(status.body.mfaVerified,false);assert.equal(status.body.mfaVerifiedUntil,null);
  await browser(request(http).get('/v1/admin/overview'),user).expect(200);
  assert.equal((await browser(request(http).post('/v1/admin/mfa'),user,true).send({code:'000000'}).expect(403)).body.code,'mfa_not_enrolled');
  const other=await login('99990002',ADMIN);await browser(request(http).get('/v1/admin/overview'),other).expect(403);
@@ -147,7 +147,7 @@ test('optional MFA still requires school login, registered admin, bootstrap and 
  await browser(request(http).post('/v1/admin/roster/preview'),user,true).send({}).expect(200);assert.equal(calls,1);
  await db.subject.update({where:{id:user.profile.id},data:{universityVerifiedUntil:new Date(Date.now()-1)}});
  assert.equal((await browser(request(http).get('/v1/admin/overview'),user).expect(403)).body.code,'university_login_required');
- assert.equal((await browser(request(http).get('/v1/admin/session'),user).expect(200)).body.authorized,false);
+ const expired=await browser(request(http).get('/v1/admin/session'),user).expect(200);assert.equal(expired.body.authorized,false);assert.equal(expired.body.schoolVerified,false);
 });
 test('disabling MFA preserves an existing TOTP secret and required mode still rejects an unverified session',async()=>{
  const user=await login('99990001',ADMIN);await enroll(user);

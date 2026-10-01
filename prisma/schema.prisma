@@ -133,3 +133,16 @@ model RosterMembership {
   snapshotId String
   snapshot RosterSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 }
+model ServerRecord {
+  id String @id
+  label String
+  sensitive Boolean @default(false)
+  enabled Boolean @default(false)
+  accessMode String @default("roster")
+  allowedSubjectIds String[] @default([]) @db.Uuid
+  paperSeenAt DateTime?
+  proxySeenAt DateTime?
+  createdAt DateTime @default(now())
+  // Heartbeats must not change the optimistic settings revision.
+  updatedAt DateTime @default(now())
+}

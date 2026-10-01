@@ -5,6 +5,7 @@ import { equal, opaqueToken, hash, csrf } from './security';
 import { policyTransaction, serializable } from './database';
 import { newTotpSecret, verifyTotp } from './totp';
 import { seal, unseal } from './sealed';
+import { permittedServers } from './registry';
 
 function adminHost(p: PassportService, req: Request) {
   if (!p.config.adminOrigin || p.host(req) !== new URL(p.config.adminOrigin).host) throw new ForbiddenException({ code: 'admin_host_required' });
@@ -29,7 +30,7 @@ export async function adminStatus(p: PassportService, req: Request) {
   const admin = subject ? await p.db.administrator.findUnique({ where: { subjectId: subject.id } }) : null;
   const schoolValid = Boolean(subject?.identityProvider === 'usaint' && subject.universityVerifiedUntil && subject.universityVerifiedUntil > new Date());
   const mfaVerified = Boolean(schoolValid && admin?.enabled && admin.totpSecret && c.session.mfaVerifiedUntil && c.session.mfaVerifiedUntil > new Date());
-  return { authenticated: Boolean(subject), displayName: subject?.displayName ?? null, enrolled: Boolean(admin?.enabled), enrollmentPending: Boolean(admin && (!admin.enabled || (p.config.adminMfaRequired && !admin.totpSecret))), bootstrapAvailable: Boolean(p.config.adminBootstrapToken) && await p.db.administrator.count() === 0, mfaRequired: p.config.adminMfaRequired, authorized: Boolean(schoolValid && admin?.enabled && (!p.config.adminMfaRequired || mfaVerified)), mfaVerified, mfaVerifiedUntil: c.session.mfaVerifiedUntil?.toISOString() ?? null };
+  return { authenticated: Boolean(subject), schoolVerified: schoolValid, displayName: subject?.displayName ?? null, enrolled: Boolean(admin?.enabled), enrollmentPending: Boolean(admin && (!admin.enabled || (p.config.adminMfaRequired && !admin.totpSecret))), bootstrapAvailable: Boolean(p.config.adminBootstrapToken) && await p.db.administrator.count() === 0, mfaRequired: p.config.adminMfaRequired, authorized: Boolean(schoolValid && admin?.enabled && (!p.config.adminMfaRequired || mfaVerified)), mfaVerified, mfaVerifiedUntil: c.session.mfaVerifiedUntil?.toISOString() ?? null };
 }
 export async function beginEnrollment(p: PassportService, req: Request, bootstrapToken: string) {
   const c = await schoolContext(p, req, true);
@@ -77,19 +78,24 @@ export async function adminOverview(p: PassportService, req: Request) {
   const [subjects, linked, suspended, snapshot] = await Promise.all([
     p.db.subject.count({ where: { identityProvider: 'usaint' } }), p.db.minecraftIdentity.count({ where: { subjectId: { not: null } } }), p.db.subject.count({ where: { accessSuspended: true } }), p.db.rosterSnapshot.findUnique({ where: { id: 'current' }, select: { entryCount: true, fetchedAt: true, expiresAt: true } })
   ]);
-  return { subjects, linked, suspended, snapshot, sync: p.membership.status(), servers: p.config.servers };
+  const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' }, select: { id: true, label: true, sensitive: true, enabled: true } });
+  return { subjects, linked, suspended, snapshot, sync: p.membership.status(), servers };
 }
 export async function adminMembers(p: PassportService, req: Request, cursor?: string) {
   await adminContext(p, req);
-  const rows = await p.db.subject.findMany({ where: { identityProvider: 'usaint' }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true, displayName: true, department: true, membershipStatus: true, roleLabel: true, verifiedUntil: true, universityVerifiedUntil: true, allowedServerIds: true, accessSuspended: true, scopeRestricted: true, scopeLimit: true, discordId: true, minecraft: { select: { uuid: true, name: true } } } });
-  return { members: rows.slice(0, 50), nextCursor: rows.length > 50 ? rows[49]!.id : null };
+  const rows = await p.db.subject.findMany({ where: { identityProvider: 'usaint' }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true, identityProvider: true, displayName: true, department: true, membershipStatus: true, roleLabel: true, verifiedUntil: true, universityVerifiedUntil: true, allowedServerIds: true, accessSuspended: true, scopeRestricted: true, scopeLimit: true, discordId: true, minecraft: { select: { uuid: true, name: true } } } });
+  const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
+  return { members: rows.slice(0, 50).map(({ identityProvider, ...subject }) => ({ ...subject, eligibleServerIds: permittedServers(subject, servers, p.accessStatus({ ...subject, identityProvider, accessSuspended: false }) === 'active', false).map(server => server.id) })), nextCursor: rows.length > 50 ? rows[49]!.id : null };
 }
 export async function setMemberAccess(p: PassportService, req: Request, id: string, input: { suspended: boolean; restricted: boolean; serverIds: string[] }) {
   const actor = await adminContext(p, req, true);
-  if (input.serverIds.some(id => !p.config.servers.some(s => s.id === id)) || new Set(input.serverIds).size !== input.serverIds.length) throw new ForbiddenException({ code: 'invalid_server_scope' });
+  if (new Set(input.serverIds).size !== input.serverIds.length) throw new ForbiddenException({ code: 'invalid_server_scope' });
   return policyTransaction(p.db, async tx => {
     const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true } });
     if (!current || current.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
+    const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
+    const eligible = permittedServers(current, records, p.accessStatus({ ...current, accessSuspended: false }) === 'active', false).map(server => server.id);
+    if (input.serverIds.some(serverId => !eligible.includes(serverId))) throw new ForbiddenException({ code: 'invalid_server_scope' });
     await tx.subject.update({ where: { id }, data: { accessSuspended: input.suspended, scopeRestricted: input.restricted, scopeLimit: input.restricted ? input.serverIds : [] } });
     if (current.minecraft) {
       const changed = await tx.minecraftIdentity.update({ where: { uuid: current.minecraft.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
