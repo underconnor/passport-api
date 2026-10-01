@@ -36,6 +36,7 @@ class PassportController {
   @Delete('v1/me/discord-id') @HttpCode(204) async removeDiscord(@Req() req: Request) { await this.passport.discord(req, null); }
   @Post('v1/link-sessions') createLink(@Req() req: Request, @Body() body: unknown) { return this.passport.createLink(req, parse(createLinkSchema, body)); }
   @Post('v1/link-sessions/:id/inspect') @HttpCode(200) inspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectLink(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
+  @Post('v1/link-sessions/:id/game-inspect') @HttpCode(200) gameInspect(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.inspectGameLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Post('v1/link-sessions/:id/web-confirm') @HttpCode(200) webConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.webConfirm(req, parse(uuidSchema, id), parse(linkTokenSchema, body).token); }
   @Post('v1/link-sessions/:id/game-confirm') @HttpCode(200) gameConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.gameConfirm(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Delete('v1/link-sessions/:id') @HttpCode(204) cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.cancelLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }

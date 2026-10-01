@@ -36,6 +36,7 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | 메서드·경로 | 입력 / 응답 |
 |---|---|
 | POST /v1/link-sessions | `{minecraftUuid,minecraftName,gameSessionId}` → 201 `{id,url,expiresAt}` |
+| POST /v1/link-sessions/:id/game-inspect | `{minecraftUuid,gameSessionId}` → `{id,status:"pending"\|"linked",expiresAt,webConfirmed,gameConfirmed}`. 현재 접속 소유권을 확인하는 읽기 전용 조회 |
 | POST /v1/link-sessions/:id/game-confirm | `{minecraftUuid,gameSessionId}` → `{id,status:"pending"\|"linked",expiresAt}` |
 | DELETE /v1/link-sessions/:id | 동일 게임 identity body → 204. 취소는 같은 접속 세션에만 허용 |
 | GET /v1/minecraft/policies/:uuid | 계약 `0.1.0-draft`의 최소 정책 |
@@ -44,6 +45,8 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | GET /healthz | DB 연결 확인. `{status:"ok",authMode}` |
 
 UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 1–16자, gameSessionId는 16–128자입니다. gameSessionId는 매 접속마다 난수 UUID로 새로 발급합니다. 연결 요청은 그 UUID의 이전 pending 요청을 취소합니다. 웹/게임 확인 순서는 자유지만 두 확인을 모두 만족해야 연결하며 동일 확인의 재사용은 409입니다. 운영자는 MFA 이후 연결 해제를 실행할 수 있으며 UUID 정책 버전은 보존합니다.
+
+게임 조회는 서비스 인증과 해당 요청의 UUID·gameSessionId가 모두 일치해야 합니다. 웹 확인 토큰이나 학교 사용자 정보는 반환하지 않습니다. 만료는410, 취소·관리자가 이미 해제한 연결은409입니다. Velocity는 현재 접속 세션에서 `webConfirmed && !gameConfirmed`일 때만 기존 게임 확인을 호출할 수 있습니다. 동시 확인의409는 다음 조회로 해결하며, `linked` 응답을 받더라도 최신 서버 정책을 다시 받아 허용 여부를 판단해야 합니다. 조회 자체는 연결·감사·정책 버전을 변경하지 않습니다.
 
 정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. lease는 60초 이하이며 명부 freshness와 학교 인증 유효기간(로그인 후 180일) 중 먼저 만료되는 시점에서 잘립니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 회원 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
 

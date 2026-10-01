@@ -28,6 +28,7 @@ async function createLink(uuid=randomUUID()) {
 }
 async function webConfirm(link,user,status=200){return browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token}).expect(status);}
 async function gameConfirm(link,status=200,body=link.identity){const {minecraftUuid,gameSessionId}=body;return service(request(http).post(`/v1/link-sessions/${link.id}/game-confirm`)).send({minecraftUuid,gameSessionId}).expect(status);}
+async function gameInspect(link,status=200,body=link.identity){const {minecraftUuid,gameSessionId}=body;return service(request(http).post(`/v1/link-sessions/${link.id}/game-inspect`)).send({minecraftUuid,gameSessionId}).expect(status);}
 async function getPolicy(uuid){return (await service(request(http).get(`/v1/minecraft/policies/${uuid}`)).expect(200)).body;}
 before(async()=>{app=await createApp();db=app.get(PassportService).db;http=app.getHttpServer();});
 after(async()=>{await app?.close();});
@@ -58,6 +59,43 @@ test('web confirmation alone does not grant access; correct game session complet
 test('game confirmation before web confirmation also requires both',async()=>{
  const user=await login();const link=await createLink();assert.equal((await gameConfirm(link)).body.status,'pending');
  assert.equal((await getPolicy(link.identity.minecraftUuid)).status,'unlinked');assert.equal((await webConfirm(link,user)).body.status,'linked');
+});
+test('game inspection requires service identity and the exact game session, and never exposes web capabilities',async()=>{
+ const link=await createLink();const {minecraftUuid,gameSessionId}=link.identity;
+ await request(http).post(`/v1/link-sessions/${link.id}/game-inspect`).send({minecraftUuid,gameSessionId}).expect(401);
+ await gameInspect(link,403,{...link.identity,gameSessionId:randomUUID()});
+ await gameInspect(link,403,{...link.identity,minecraftUuid:randomUUID()});
+ await gameInspect({...link,id:randomUUID()},404);
+ const before={links:await db.linkSession.findMany(),audits:await db.auditEvent.count(),events:await db.policyEvent.count()};
+ const inspected=await gameInspect(link);
+ assert.deepEqual(inspected.body,{id:link.id,status:'pending',expiresAt:link.expiresAt,webConfirmed:false,gameConfirmed:false});
+ assert.match(inspected.headers['cache-control'],/no-store/);
+ assert.deepEqual(await db.linkSession.findMany(),before.links);
+ assert.equal(await db.auditEvent.count(),before.audits);assert.equal(await db.policyEvent.count(),before.events);
+});
+test('game polling observes web confirmation and completed links while confirmation retries stay consumed',async()=>{
+ const user=await login();const link=await createLink();
+ assert.equal((await gameInspect(link)).body.webConfirmed,false);
+ await webConfirm(link,user);
+ assert.deepEqual((await gameInspect(link)).body,{id:link.id,status:'pending',expiresAt:link.expiresAt,webConfirmed:true,gameConfirmed:false});
+ await gameConfirm(link);await gameConfirm(link,409);
+ const complete=await gameInspect(link);assert.equal(complete.body.status,'linked');assert.equal(complete.body.gameConfirmed,true);
+ assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked'}}),1);
+ assert.equal(await db.policyEvent.count({where:{minecraftUuid:link.identity.minecraftUuid}}),1);
+ await gameInspect(link,403,{...link.identity,gameSessionId:randomUUID()});
+ await db.minecraftIdentity.update({where:{uuid:link.identity.minecraftUuid},data:{subjectId:null}});
+ await gameInspect(link,409);
+});
+test('game inspection rejects expired and cancelled requests, including already completed expired links',async()=>{
+ const user=await login();const link=await createLink();await gameConfirm(link);
+ assert.equal((await gameInspect(link)).body.gameConfirmed,true);
+ await webConfirm(link,user);assert.equal((await gameInspect(link)).body.status,'linked');
+ await db.linkSession.update({where:{id:link.id},data:{expiresAt:new Date(Date.now()-1000)}});
+ await gameInspect(link,410);
+ const pending=await createLink();await db.linkSession.update({where:{id:pending.id},data:{expiresAt:new Date(Date.now()-1000)}});await gameInspect(pending,410);
+ const cancelled=await createLink();const {minecraftUuid,gameSessionId}=cancelled.identity;
+ await service(request(http).delete(`/v1/link-sessions/${cancelled.id}`)).send({minecraftUuid,gameSessionId}).expect(204);
+ await gameInspect(cancelled,409);
 });
 test('expired link, expired web session, substituted token and absent CSRF fail',async()=>{
  const user=await login();const link=await createLink();

@@ -152,6 +152,21 @@ export class PassportService {
     if (!['pending', 'linked'].includes(link.status)) throw new ConflictException({ code: 'link_consumed' });
     return { id: link.id, minecraftName: link.minecraftName, minecraftUuid: link.minecraftUuid, status: link.status, expiresAt: link.expiresAt.toISOString(), webConfirmed: Boolean(link.webConfirmedAt), gameConfirmed: Boolean(link.gameConfirmedAt) };
   }
+  async inspectGameLink(req: Request, id: string, input: { minecraftUuid: string; gameSessionId: string }) {
+    this.service(req);
+    return serializable(this.db, async tx => {
+      const link = await tx.linkSession.findUnique({ where: { id } });
+      if (!link) throw new NotFoundException({ code: 'link_not_found' });
+      if (link.minecraftUuid !== input.minecraftUuid || !equal(link.gameSessionHash, hash(input.gameSessionId))) throw new ForbiddenException({ code: 'game_session_mismatch' });
+      if (link.expiresAt <= new Date()) throw new GoneException({ code: 'link_expired' });
+      if (!['pending', 'linked'].includes(link.status)) throw new ConflictException({ code: 'link_consumed' });
+      if (link.status === 'linked') {
+        const identity = await tx.minecraftIdentity.findUnique({ where: { uuid: link.minecraftUuid }, select: { subjectId: true } });
+        if (!link.subjectId || identity?.subjectId !== link.subjectId) throw new ConflictException({ code: 'link_consumed' });
+      }
+      return { id: link.id, status: link.status, expiresAt: link.expiresAt.toISOString(), webConfirmed: Boolean(link.webConfirmedAt), gameConfirmed: Boolean(link.gameConfirmedAt) };
+    });
+  }
   // Both callers enter policyTransaction before reading or updating the link.
   async finishLink(tx: Prisma.TransactionClient, link: LinkSession) {
     if (!link.gameConfirmedAt || !link.webConfirmedAt) return link;
