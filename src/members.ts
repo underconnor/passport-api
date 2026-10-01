@@ -9,6 +9,7 @@ import { discordProfile, projectDiscordIdentity } from './discord-policy';
 import { studentKey } from './integrations/sheets';
 import { presenceDto } from './game-identity';
 import { equal, hash } from './security';
+import { verifiedStudentId } from './school-identity';
 
 type Account = Subject & { minecraft: MinecraftIdentity | null; discordIdentity: DiscordIdentity | null; administrator: Administrator | null };
 export type MemberQuery = { q: string; membership: 'all' | 'active' | 'inactive' | 'suspended'; sort: 'name' | 'newest' | 'oldest'; limit: number; cursor?: string };
@@ -47,7 +48,7 @@ export async function adminMembers(p: PassportService, req: Request, input: Memb
   ]);
   const presences = await p.db.playerPresence.findMany({ where: { minecraftUuid: { in: rows.flatMap(row => row.minecraft ? [row.minecraft.uuid] : []) } } });
   const members = await Promise.all(rows.slice(0, input.limit).map(async account => ({
-    id: account.id, displayName: account.displayName, department: account.department, admissionYear: account.admissionYear, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, verifiedUntil: account.verifiedUntil, universityVerifiedUntil: account.universityVerifiedUntil, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, discordId: account.discordId, minecraft: account.minecraft ? { uuid: account.minecraft.uuid, name: account.minecraft.name } : null,
+    id: account.id, displayName: account.displayName, department: account.department, studentId: verifiedStudentId(account, p.config.encryptionKey), admissionYear: account.admissionYear, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, verifiedUntil: account.verifiedUntil, universityVerifiedUntil: account.universityVerifiedUntil, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, discordId: account.discordId, minecraft: account.minecraft ? { uuid: account.minecraft.uuid, name: account.minecraft.name } : null,
     presence: presenceDto(presences.find(row => row.minecraftUuid === account.minecraft?.uuid), servers, now), createdAt: account.createdAt, revision: accountRevision(account), administrator: account.administrator?.enabled ?? false,
     discordConnection: await discordProfile(p.db, account.discordIdentity, p.config.discord), eligibleServerIds: p.gameServers({ ...account, accessSuspended: false }, servers, now, false).map(server => server.id),
   })));

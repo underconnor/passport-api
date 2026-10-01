@@ -1,6 +1,6 @@
 # 개인정보 안내·동의와 스킨
 
-`GET /v1/privacy`는 `src/privacy.ts`의 고정 버전 안내를 반환한다. 현재 버전은 `2026-10-01.5`이며 purpose/items/retention/withdrawal을 함께 제공한다. 수집 목적·항목을 실질적으로 추가할 때는 버전을 갱신한다. 회원 매칭은 HMAC 식별 키로 유지한다. `.5` 동의 후 새 학교 로그인에서 검증한 전체 학번만 계정별 AAD의 AES-256-GCM 암호문으로 보관하고 인증된 본인 `/v1/me.studentId`에 표시한다. 기존 계정은 재로그인 전까지 null이다. 관리자 로그인에는 동의 절차가 없어 새 학번 보관을 시작하지 않는다. 학교 비밀번호는 받지 않는다.
+`GET /v1/privacy`는 `src/privacy.ts`의 고정 버전 안내를 반환한다. 현재 버전은 `2026-10-01.5`이며 purpose/items/retention/withdrawal을 함께 제공한다. 수집 목적·항목을 실질적으로 추가할 때는 버전을 갱신한다. 회원 매칭은 HMAC 식별 키로 유지한다. `.5` 동의 후 새 학교 로그인에서 검증한 전체 학번만 계정별 AAD의 AES-256-GCM 암호문으로 보관하고 인증된 본인 `/v1/me.studentId`와 명시적 관리자 인가를 통과한 `/v1/admin/members`에 표시한다. 암호문이 없는 기존 계정은 재로그인 전까지 null이며 손상·계정 불일치도 null이다. 관리자 로그인에는 동의 절차가 없어 새 학번 보관을 시작하지 않는다. 학교 비밀번호는 받지 않는다.
 
 사용자 포털의 학교 로그인 시작과 로그인 후 Minecraft 웹 연결 확인에는 `{consent:{accepted:true,version}}`가 필요하다. 동의 없음/false는400 `consent_required`, 이전 안내 버전은409 `consent_version_mismatch`다. 관리자 학교 로그인은 별도 운영자 인증 흐름을 유지하며 일반 사용자의 동의 기록을 임의로 만들지 않는다.
 

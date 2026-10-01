@@ -14,7 +14,7 @@ import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './pr
 import { minecraftSkin } from './integrations/minecraft-skin';
 import { discordProfile, refreshDiscordSubject } from './discord-policy';
 import { seedDiscordSettings } from './discord-management';
-import { ownerStudentId } from './school-identity';
+import { verifiedStudentId } from './school-identity';
 import { migrateSchoolVerificationExpiry } from './school-expiry';
 
 type Context = { session: WebSession & { subject: Subject | null }; token: string };
@@ -114,7 +114,7 @@ export class PassportService {
   }
   async profile(subject: Subject, token: string) {
     const [minecraft, consent, discord] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } }), this.db.discordIdentity.findUnique({ where: { subjectId: subject.id }, include: { roles: true } })]);
-    return { id: subject.id, studentId: ownerStudentId(subject, this.config.encryptionKey), displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.membershipAccessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: await discordProfile(this.db, discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    return { id: subject.id, studentId: verifiedStudentId(subject, this.config.encryptionKey), displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.membershipAccessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: await discordProfile(this.db, discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
   async myMinecraftSkin(req: Request) {

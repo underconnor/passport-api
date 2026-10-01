@@ -32,11 +32,11 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();});
 
-test('member search combines exact HMAC school ID, names, IGN and Discord without returning raw IDs',async()=>{
+test('member search combines exact HMAC school ID, names, IGN and Discord without reconstructing a missing full ID',async()=>{
  const a=await linked({displayName:'가상학생',universityKey:studentKey('99990001',p.config.matchingSecret)});
  await db.discordIdentity.create({data:{discordUserId:'200000000000000011',guildId:p.config.discord.guildId,username:'unified_search',displayName:'연동검색',subjectId:a.owner.id,verifiedAt:new Date()}});
  for(const q of ['가상','SyntheticIGN','unified_search','연동검색','200000000000000011','99990001']){
-  const response=(await browser(request(http).get('/v1/admin/members').query({q})).expect(200)).body;assert.equal(response.total,1);assert.equal(response.members[0].id,a.owner.id);assert.match(response.members[0].revision,/^[a-f0-9]{64}$/);assert.ok(!JSON.stringify(response).includes('99990001'));assert.ok(!JSON.stringify(response).includes(a.owner.universityKey));
+  const response=(await browser(request(http).get('/v1/admin/members').query({q})).expect(200)).body;assert.equal(response.total,1);assert.equal(response.members[0].id,a.owner.id);assert.equal(response.members[0].studentId,null);assert.match(response.members[0].revision,/^[a-f0-9]{64}$/);assert.ok(!JSON.stringify(response).includes('99990001'));assert.ok(!JSON.stringify(response).includes(a.owner.universityKey));
  }
  assert.equal((await browser(request(http).get('/v1/admin/members').query({q:'99990002'})).expect(200)).body.total,0);
  await browser(request(http).get('/v1/admin/members').query({q:'x'.repeat(129)})).expect(400);
@@ -175,4 +175,39 @@ test('erasing an account removes its encrypted student ID and never puts it in a
  const a=await linked({universityKey:key,studentIdCiphertext:cipher});await remove(a.owner);
  assert.equal(await db.subject.count({where:{studentIdCiphertext:cipher}}),0);
  const audit=JSON.stringify(await db.auditEvent.findMany());assert.ok(!audit.includes(cipher));assert.ok(!audit.includes('99998888'));
+});
+
+test('administrator member list reveals a verified student ID only after administrator session and host authorization',async()=>{
+ const {sealStudentId}=require('../dist/school-identity');const studentId='99997777',key=studentKey(studentId,p.config.matchingSecret),cipher=sealStudentId(studentId,key,p.config.encryptionKey);
+ const a=await linked({universityKey:key,studentIdCiphertext:cipher,admissionYear:'99'});
+ const read=()=>request(http).get('/v1/admin/members').query({q:studentId});
+ const result=(await browser(read()).expect(200)).body;
+ assert.equal(result.total,1);assert.equal(result.members[0].studentId,studentId);assert.equal(result.members[0].admissionYear,'99');
+ assert.ok(!JSON.stringify(result).includes(cipher));assert.ok(!JSON.stringify(result).includes(key));
+ const denied=[];
+ denied.push(await read().set('Host',admin.host).expect(401));
+ denied.push(await service(read()).set('Host',admin.host).expect(401));
+ denied.push(await browser(read(),a.portal).expect(403));
+ const ordinaryAdminHost=await session(a.owner,'admin.example.test');denied.push(await browser(read(),ordinaryAdminHost).expect(403));
+ await db.administrator.update({where:{subjectId:admin.subject.id},data:{enabled:false}});denied.push(await browser(read()).expect(403));
+ await db.administrator.update({where:{subjectId:admin.subject.id},data:{enabled:true}});await db.subject.update({where:{id:admin.subject.id},data:{universityVerifiedUntil:new Date(0)}});denied.push(await browser(read()).expect(403));
+ for(const response of denied){assert.ok(!response.text.includes(studentId));assert.ok(!response.text.includes(cipher));}
+ assert.equal((await browser(request(http).get('/v1/me'),a.portal).expect(200)).body.studentId,studentId);
+});
+
+test('administrator student ID remains null for missing, damaged or account-swapped ciphertext',async()=>{
+ const {sealStudentId}=require('../dist/school-identity');const key=studentKey('99996666',p.config.matchingSecret),cipher=sealStudentId('99996666',key,p.config.encryptionKey);
+ const plain=await subject({displayName:'Legacy ID',universityKey:key});
+ const damaged=await subject({displayName:'Damaged ID',studentIdCiphertext:cipher.slice(0,17)+(cipher[17]==='A'?'B':'A')+cipher.slice(18)});
+ const swapped=await subject({displayName:'Swapped ID',studentIdCiphertext:cipher});
+ const members=(await browser(request(http).get('/v1/admin/members')).expect(200)).body.members;
+ for(const account of [plain,damaged,swapped])assert.equal(members.find(member=>member.id===account.id).studentId,null);
+ assert.ok(!JSON.stringify(members).includes('99996666'));assert.ok(!JSON.stringify(members).includes(cipher));
+});
+
+test('administrator student ID expansion leaves game, Discord bot and audit payloads free of full identifiers',async()=>{
+ const {sealStudentId}=require('../dist/school-identity');const studentId='99995555',key=studentKey(studentId,p.config.matchingSecret),cipher=sealStudentId(studentId,key,p.config.encryptionKey);
+ const a=await linked({universityKey:key,studentIdCiphertext:cipher});
+ const output=[(await policy(a.minecraft.uuid)).body,(await service(request(http).get('/v1/minecraft/players').query({query:a.minecraft.name})).expect(200)).body,(await service(request(http).get(`/v1/minecraft/players/${a.minecraft.uuid}/stats`)).expect(200)).body,(await request(http).get('/v2/discord/config').set('Authorization',`Bearer ${p.config.discord.serviceToken}`).expect(200)).body,(await browser(request(http).get('/v1/admin/audit')).expect(200)).body];
+ for(const body of output){const text=JSON.stringify(body);assert.ok(!text.includes(studentId));assert.ok(!text.includes(cipher));assert.ok(!text.includes('studentId'));}
 });

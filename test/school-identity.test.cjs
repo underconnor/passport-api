@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { semesterVerificationExpiry, migratedVerificationExpiry, sealStudentId, ownerStudentId } = require('../dist/school-identity');
+const { semesterVerificationExpiry, migratedVerificationExpiry, sealStudentId, verifiedStudentId } = require('../dist/school-identity');
 
 test('school verification ends at the next semester boundary in Korea, including leap years', () => {
   for (const [verified, expected] of [
@@ -33,11 +33,11 @@ test('student ID ciphertext is randomized, account-bound and fails closed for ta
   const subject = { identityProvider: 'usaint', universityKey, studentIdCiphertext: ciphertext };
   assert.ok(!ciphertext.includes(studentId));
   assert.notEqual(ciphertext, sealStudentId(studentId, universityKey, key));
-  assert.equal(ownerStudentId(subject, key), studentId);
-  assert.equal(ownerStudentId({ ...subject, universityKey: 'another-account' }, key), null);
-  assert.equal(ownerStudentId(subject, 'cd'.repeat(32)), null);
-  assert.equal(ownerStudentId({ ...subject, studentIdCiphertext: ciphertext.slice(0, -2) + 'AA' }, key), null);
-  assert.equal(ownerStudentId({ ...subject, identityProvider: 'development' }, key), null);
-  assert.equal(ownerStudentId({ ...subject, studentIdCiphertext: null }, key), null);
+  assert.equal(verifiedStudentId(subject, key), studentId);
+  assert.equal(verifiedStudentId({ ...subject, universityKey: 'another-account' }, key), null);
+  assert.equal(verifiedStudentId(subject, 'cd'.repeat(32)), null);
+  assert.equal(verifiedStudentId({ ...subject, studentIdCiphertext: ciphertext.slice(0, -2) + 'AA' }, key), null);
+  assert.equal(verifiedStudentId({ ...subject, identityProvider: 'development' }, key), null);
+  assert.equal(verifiedStudentId({ ...subject, studentIdCiphertext: null }, key), null);
   assert.throws(() => sealStudentId('bad identifier', universityKey, key));
 });

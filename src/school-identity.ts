@@ -26,7 +26,8 @@ export function sealStudentId(studentId: string, universityKey: string, encrypti
   return seal(studentId, encryptionKey, `student-id:${universityKey}`);
 }
 
-export function ownerStudentId(subject: { identityProvider: string; universityKey: string; studentIdCiphertext: string | null }, encryptionKey: string): string | null {
+/** Call only after owner-session or explicit administrator authorization. */
+export function verifiedStudentId(subject: { identityProvider: string; universityKey: string; studentIdCiphertext: string | null }, encryptionKey: string): string | null {
   if (subject.identityProvider !== 'usaint' || !subject.studentIdCiphertext) return null;
   // A damaged value or a mismatched key must not expose data or break sign-in.
   try {
