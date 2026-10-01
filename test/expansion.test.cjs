@@ -155,7 +155,7 @@ test('semester expiry migration is idempotent, preserves expired identities and 
  const expired=await subject({universityVerifiedAt:verifiedAt,universityVerifiedUntil:new Date('2026-10-01T01:00:00Z')});
  const missing=await subject({universityVerifiedAt:verifiedAt,universityVerifiedUntil:null});
  const stale=await linked({universityVerifiedAt:new Date('2026-08-01T00:00:00Z'),universityVerifiedUntil:new Date('2027-01-28T00:00:00Z')});
- const discordUserId='200000000000000077';await db.discordIdentity.create({data:{discordUserId,guildId:p.config.discord.guildId,username:'expiry_fixture',subjectId:a.owner.id,verifiedAt}});
+ const discordUserId='200000000000000077';await db.discordIdentity.create({data:{discordUserId,guildId:p.config.discord.guildId,username:'expiry_fixture',displayName:'Synthetic expiry fixture',subjectId:a.owner.id,verifiedAt}});
  await policyTransaction(db,tx=>projectDiscordIdentity(tx,discordUserId,now));
  const dry=await migrateSchoolVerificationExpiry(db,false,now);assert.equal(dry.changed,2);
  assert.equal((await db.subject.findUnique({where:{id:a.owner.id}})).universityVerifiedUntil.toISOString(),old.toISOString());
