@@ -10,14 +10,14 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | GET /v1/privacy | `{version,purpose,items,retention,withdrawal}` 고정 버전 안내 |
 | POST /v1/auth/development | `{identity:"member"\|"outsider"}`. 개발 모드만 허용. 세션 회전 후 /me 응답 |
 | POST /v1/auth/logout | 인증 세션 회수, 204 |
-| GET /v1/me | `{id,displayName,identityProvider,membership:{status,roleLabel,verifiedUntil},minecraft:{uuid,name}\|null,discordReference:{id,verificationStatus:"self_reported",updatedAt}\|null,csrfToken}` |
-| GET /v1/me/servers | `{servers:[{id,label,sensitive?}]}` |
+| GET /v1/me | `{id,displayName,identityProvider,membership:{status,effectiveStatus,roleLabel,verifiedUntil},minecraft:{uuid,name}\|null,discordReference:{id,verificationStatus:"self_reported",updatedAt}\|null,csrfToken}` |
+| GET /v1/me/servers | `{servers:[{id,label,sensitive}]}`. 실제 허용 서버만 반환, 거절 대상 ID·이름 비노출 |
 | GET /v1/me/minecraft-skin | 자신의 연결된 스킨 `{dataUrl,model}`. 상류 장애나 미연결은 null |
 | PUT /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
 | DELETE /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
 | POST /v1/link-sessions/:id/inspect | `{token}`. 익명 세션+CSRF 허용. `{id,minecraftName,minecraftUuid,status,expiresAt,webConfirmed,gameConfirmed}` |
 | POST /v1/link-sessions/:id/skin | `{token}`. 세션+CSRF+링크 소유 확인 → `{dataUrl,model}` |
-| POST /v1/link-sessions/:id/web-confirm | `{token,consent:{accepted:true,version}}`. 인증한 회원 세션+CSRF. `{id,status,expiresAt}` |
+| POST /v1/link-sessions/:id/web-confirm | `{token,consent:{accepted:true,version}}`. 학교 인증 세션+CSRF+현재 허용 서버 필요. `{id,status,expiresAt}` |
 | POST /v1/auth/university/start | 사용자 `{link?:{id,token},consent:{accepted:true,version}}` + CSRF → `{url,expiresIn:300}`. 관리자 로그인은 consent 입력 불필요 |
 | GET /v1/auth/university/callback/:state | 학교 `sToken,sIdno` query. 현재 브라우저 세션·단회 state·학번 검증 후 새 세션 및 303 clean redirect |
 | GET /v1/auth/university/callback | state 없는 구형 경로는 비활성 |
@@ -56,7 +56,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 게임 조회는 서비스 인증과 해당 요청의 UUID·gameSessionId가 모두 일치해야 합니다. 웹 확인 토큰이나 학교 사용자 정보는 반환하지 않습니다. 만료는410, 취소·관리자가 이미 해제한 연결은409입니다. Velocity는 현재 접속 세션에서 `webConfirmed && !gameConfirmed`일 때만 기존 게임 확인을 호출할 수 있습니다. 동시 확인의409는 다음 조회로 해결하며, `linked` 응답을 받더라도 최신 서버 정책을 다시 받아 허용 여부를 판단해야 합니다. 조회 자체는 연결·감사·정책 버전을 변경하지 않습니다.
 
-정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. lease는 60초 이하이며 명부 freshness와 학교 인증 유효기간(로그인 후 180일) 중 먼저 만료되는 시점에서 잘립니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 회원 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
+정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. 여기서 active는 허용 서버가 하나 이상인 게임 권한 상태이며 `/me.membership.effectiveStatus`의 소모임 회원 상태와 구분합니다. 빈 허용 범위는 active로 반환하지 않습니다. lease는 최대60초와 학교 인증 유효기간(로그인 후180일) 중 먼저 만료되는 시점에서 잘리고, 허용 범위에 회원 전용 서버가 있거나 회원 prefix를 내보내면 명부 freshness도 적용합니다. 학교 전체(`university`) 서버만 허용되고 회원 prefix가 없으면 명부 TTL은 사용하지 않습니다. 비회원 또는 명부가 만료된 사용자의 회원 roleLabel은 비웁니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
 
 ## 환경 변수
 
@@ -86,7 +86,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 이벤트는 정책 변경 알림이며 허가 증거가 아닙니다. `reset=true`이면 접속자를 다시 조회하고, 보존한 UUID 버전보다 낮은 정책은 거절합니다. DB 복원으로 버전이 내려가면 운영자가 버전을 복구해야 합니다.
 
-DB에 보관하는 발견·활성화·회원 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `admin/overview.servers`는 비활성 서버도 이름을 확인할 수 있도록 `{id,label,sensitive,enabled}` 전체 목록을 제공합니다.
+DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `accessMode`는 `roster|members|selected|university`입니다. university만 비회원의 유효한 학교 인증을 허용하며 모든 모드에서 전체 정지·개인 서버 제한은 유지합니다. 기존 서버는 설정을 바꾸지 않고 새 발견도 비활성 roster로 남습니다. `admin/overview.servers`는 관리자에게 비활성 서버도 이름을 확인할 수 있도록 `{id,label,sensitive,enabled}` 전체 목록을 제공합니다.
 
 이벤트를 생성할 수 있는 정책 트랜잭션은 `policyTransaction`을 사용합니다. 트랜잭션의 첫 SQL에서 공통 PostgreSQL advisory transaction lock을 획득해 ID 발급과 커밋 순서가 어긋나지 않도록 합니다. 웹·게임 연결 완료, 정책 조회 중 변경 감지, 관리자 접근 제한·연결 해제, 명부 반영, 학교 로그인 완료에 적용합니다. 학교 재로그인 시 기존 Minecraft 연결이 있으면 갱신된 학교 유효기간·이름·명부 정보를 소비자가 다시 읽도록 정책 버전과 이벤트를 함께 갱신합니다. 미연결 첫 로그인은 이벤트를 만들지 않습니다. 일반 인증 준비·MFA·읽기 트랜잭션에는 적용하지 않습니다. 잠금은 커밋·롤백 시 자동 해제됩니다. 앞으로 이벤트 생산 경로를 추가할 때도 같은 wrapper를 사용해야 합니다.
 

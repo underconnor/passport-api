@@ -1,12 +1,12 @@
 import { Injectable, UnauthorizedException, ForbiddenException, NotFoundException, ConflictException, GoneException, ServiceUnavailableException, BadRequestException } from '@nestjs/common';
-import { PrismaClient, Prisma, WebSession, Subject, LinkSession } from '@prisma/client';
+import { PrismaClient, Prisma, WebSession, Subject, LinkSession, ServerRecord } from '@prisma/client';
 import { Request, Response } from 'express';
 import { parse as parseCookie, serialize } from 'cookie';
 import { Config, configFromEnv } from './config';
 import { hash, opaqueToken, equal, csrf } from './security';
 import { policyTransaction, serializable } from './database';
 import { startMembershipSync } from './membership-sync';
-import { permittedServers, seedServerRegistry } from './registry';
+import { permittedServers, seedServerRegistry, ScopeSubject } from './registry';
 import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
 import { minecraftSkin } from './integrations/minecraft-skin';
 import { discordConnection } from './discord-policy';
@@ -104,7 +104,7 @@ export class PassportService {
   }
   async profile(subject: Subject, token: string) {
     const [minecraft, consent, discord] = await Promise.all([this.db.minecraftIdentity.findUnique({ where: { subjectId: subject.id } }), this.db.consentReceipt.findFirst({ where: { subjectId: subject.id, version: privacyNotice.version }, orderBy: { acceptedAt: 'desc' }, select: { acceptedAt: true } }), this.db.discordIdentity.findUnique({ where: { subjectId: subject.id }, include: { roles: true } })]);
-    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.accessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: discordConnection(discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
+    return { id: subject.id, displayName: subject.displayName, identityProvider: subject.identityProvider, department: subject.department, academicStatus: subject.academicStatus, universityVerifiedAt: subject.universityVerifiedAt?.toISOString() ?? null, universityVerifiedUntil: subject.universityVerifiedUntil?.toISOString() ?? null, accessSuspended: subject.accessSuspended, membership: { status: subject.membershipStatus, effectiveStatus: this.membershipAccessStatus(subject), roleLabel: subject.roleLabel, verifiedUntil: subject.verifiedUntil.toISOString() }, minecraft: minecraft ? { uuid: minecraft.uuid, name: minecraft.name } : null, discordConnection: discordConnection(discord, this.config.discord), privacyConsent: { version: privacyNotice.version, accepted: Boolean(consent), acceptedAt: consent?.acceptedAt.toISOString() ?? null }, discordReference: subject.discordId ? { id: subject.discordId, verificationStatus: 'self_reported', updatedAt: subject.discordUpdatedAt!.toISOString() } : null, csrfToken: csrf(this.config.sessionSecret, token) };
   }
   async me(req: Request) { const c = await this.context(req, true); return this.profile(c.session.subject!, c.token); }
   async myMinecraftSkin(req: Request) {
@@ -129,12 +129,21 @@ export class PassportService {
     const c = await this.context(req, true);
     const s = c.session.subject!;
     const records = await this.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    return { servers: permittedServers(s, records, this.accessStatus(s) === 'active').map(({ id, label, sensitive }) => ({ id, label, sensitive })) };
+    return { servers: this.gameServers(s, records).map(({ id, label, sensitive }) => ({ id, label, sensitive })) };
   }
-  accessStatus(subject: Pick<Subject, 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>, now = new Date()) {
+  gameServers(subject: ScopeSubject, records: ServerRecord[], now = new Date(), applyPersonalLimit = true) {
+    return permittedServers(subject, records, { now, applyPersonalLimit, allowDevelopment: !this.config.production && this.config.authMode === 'development' });
+  }
+  membershipAccessStatus(subject: Pick<Subject, 'accessSuspended' | 'membershipStatus' | 'verifiedUntil'>, now = new Date()) {
     if (subject.accessSuspended || subject.membershipStatus === 'suspended') return 'suspended';
     if (subject.membershipStatus !== 'active') return 'revoked';
-    if (subject.verifiedUntil <= now || (subject.identityProvider === 'usaint' && (!subject.universityVerifiedUntil || subject.universityVerifiedUntil <= now))) return 'stale';
+    if (subject.verifiedUntil <= now) return 'stale';
+    return 'active';
+  }
+  accessStatus(subject: Pick<Subject, 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>, now = new Date()) {
+    const membership = this.membershipAccessStatus(subject, now);
+    if (membership !== 'active') return membership;
+    if (subject.identityProvider === 'usaint' && (!subject.universityVerifiedUntil || subject.universityVerifiedUntil <= now)) return 'stale';
     return 'active';
   }
   async createLink(req: Request, input: { minecraftUuid: string; minecraftName: string; gameSessionId: string }) {
@@ -185,7 +194,7 @@ export class PassportService {
     const session = await tx.webSession.findUnique({ where: { id: link.webSessionId } });
     const subject = await tx.subject.findUnique({ where: { id: link.subjectId } });
     if (!session || session.expiresAt <= new Date() || session.subjectId !== link.subjectId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
-    if (!subject || this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
+    if (!subject || !this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
     const consent = await tx.consentReceipt.findFirst({ where: { subjectId: subject.id, source: 'minecraft_link', contextId: link.id, version: privacyNotice.version }, select: { id: true } });
     if (!consent) throw new ForbiddenException({ code: 'consent_required' });
     const previous = await tx.minecraftIdentity.findUnique({ where: { subjectId: subject.id } });
@@ -204,7 +213,7 @@ export class PassportService {
       this.ensurePending(found);
       if (found.webConfirmedAt) throw new ConflictException({ code: 'web_confirmation_consumed' });
       const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId } });
-      if (this.accessStatus(subject) !== 'active') throw new ForbiddenException({ code: 'membership_required' });
+      if (!this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
       await recordConsent(tx, subject.id, 'minecraft_link', id, consent);
       const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId, webConfirmedAt: new Date() } });
       return this.finishLink(tx, claimed);
@@ -242,10 +251,13 @@ export class PassportService {
       const now = new Date();
       const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: true } });
       const subject = identity.subject;
-      const status = !subject ? 'unlinked' : this.accessStatus(subject, now);
+      const memberStatus = subject ? this.accessStatus(subject, now) : 'unlinked';
       const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
-      const allowedServerIds = subject ? permittedServers(subject, records, status === 'active').map(server => server.id) : [];
-      const display = { roleLabel: status === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: subject ? subject.displayName.slice(0, 40) : identity.name };
+      const allowedServers = subject ? this.gameServers(subject, records, now) : [];
+      // Policy active means game authorization, independently from club membership.
+      const status = allowedServers.length ? 'active' : memberStatus === 'active' ? 'revoked' : memberStatus;
+      const allowedServerIds = allowedServers.map(server => server.id);
+      const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: subject ? subject.displayName.slice(0, 40) : identity.name };
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display }));
       let policyVersion = identity.policyVersion;
       if (identity.policyFingerprint !== fingerprint) {
@@ -253,7 +265,9 @@ export class PassportService {
         policyVersion = changed.policyVersion;
         if (identity.policyFingerprint) await tx.policyEvent.create({ data: { minecraftUuid: uuid, policyVersion } });
       }
-      const expires = status === 'active' ? Math.min(now.getTime() + 60000, subject!.verifiedUntil.getTime(), subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
+      const expires = status === 'active' ? Math.min(now.getTime() + 60000,
+        allowedServers.some(server => server.accessMode !== 'university') || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
+        subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
       return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, display, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(expires).toISOString() };
     });
   }

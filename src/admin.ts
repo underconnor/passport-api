@@ -5,7 +5,6 @@ import { equal, opaqueToken, hash, csrf } from './security';
 import { policyTransaction, serializable } from './database';
 import { newTotpSecret, verifyTotp } from './totp';
 import { seal, unseal } from './sealed';
-import { permittedServers } from './registry';
 import { discordConnection, refreshDiscordSubject } from './discord-policy';
 
 function adminHost(p: PassportService, req: Request) {
@@ -86,7 +85,7 @@ export async function adminMembers(p: PassportService, req: Request, cursor?: st
   await adminContext(p, req);
   const rows = await p.db.subject.findMany({ where: { identityProvider: 'usaint' }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true, identityProvider: true, displayName: true, department: true, membershipStatus: true, roleLabel: true, verifiedUntil: true, universityVerifiedUntil: true, allowedServerIds: true, accessSuspended: true, scopeRestricted: true, scopeLimit: true, discordId: true, discordIdentity: { include: { roles: true } }, minecraft: { select: { uuid: true, name: true } } } });
   const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
-  return { members: rows.slice(0, 50).map(({ identityProvider, discordIdentity, ...subject }) => ({ ...subject, discordConnection: discordConnection(discordIdentity, p.config.discord), eligibleServerIds: permittedServers(subject, servers, p.accessStatus({ ...subject, identityProvider, accessSuspended: false }) === 'active', false).map(server => server.id) })), nextCursor: rows.length > 50 ? rows[49]!.id : null };
+  return { members: rows.slice(0, 50).map(({ identityProvider, discordIdentity, ...subject }) => ({ ...subject, discordConnection: discordConnection(discordIdentity, p.config.discord), eligibleServerIds: p.gameServers({ ...subject, identityProvider, accessSuspended: false }, servers, new Date(), false).map(server => server.id) })), nextCursor: rows.length > 50 ? rows[49]!.id : null };
 }
 export async function setMemberAccess(p: PassportService, req: Request, id: string, input: { suspended: boolean; restricted: boolean; serverIds: string[] }) {
   const actor = await adminContext(p, req, true);
@@ -95,7 +94,7 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
     const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true } });
     if (!current || current.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
     const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    const eligible = permittedServers(current, records, p.accessStatus({ ...current, accessSuspended: false }) === 'active', false).map(server => server.id);
+    const eligible = p.gameServers({ ...current, accessSuspended: false }, records, new Date(), false).map(server => server.id);
     if (input.serverIds.some(serverId => !eligible.includes(serverId))) throw new ForbiddenException({ code: 'invalid_server_scope' });
     await tx.subject.update({ where: { id }, data: { accessSuspended: input.suspended, scopeRestricted: input.restricted, scopeLimit: input.restricted ? input.serverIds : [] } });
     await refreshDiscordSubject(tx, id);

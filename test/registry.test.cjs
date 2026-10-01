@@ -10,6 +10,7 @@ Object.assign(process.env,{DATABASE_URL:database.href,NODE_ENV:'production',PASS
 const {createApp}=require('../dist/app');
 const {hash,csrf}=require('../dist/security');
 const {seedServerRegistry}=require('../dist/registry');
+const {privacyNotice}=require('../dist/privacy');
 const db=new PrismaClient({datasources:{db:{url:database.href}}});
 let app,http,admin;
 const ADMIN='admin.example.test',PORTAL='portal.example.test';
@@ -101,4 +102,99 @@ test('Paper liveness expires independently from configured proxy availability an
  await settings('lobby',{enabled:false});
  const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryDisabled',subjectId:admin.subject.id}});
  assert.deepEqual((await policy(identity)).allowedServerIds,['survival']);
+});
+
+async function publicServer(){await heartbeat('paper',[{id:'campus',label:'학교 인증 공개 서버'}]);await settings('campus',{enabled:true,accessMode:'university'});}
+async function gameLink(){const identity={minecraftUuid:randomUUID(),minecraftName:'RegistryGuest',gameSessionId:randomUUID()};const result=await service(request(http).post('/v1/link-sessions')).send(identity).expect(201);return{...result.body,...identity,token:new URL(result.body.url).hash.slice(7)};}
+function webLink(link,user){return browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user,true).send({token:link.token,consent:{accepted:true,version:privacyNotice.version}});}
+function confirmGame(link){return service(request(http).post(`/v1/link-sessions/${link.id}/game-confirm`)).send({minecraftUuid:link.minecraftUuid,gameSessionId:link.gameSessionId});}
+async function visibleServers(user){return(await browser(request(http).get('/v1/me/servers'),user).expect(200)).body.servers;}
+
+test('university is opt-in: nonmembers see only allowed servers and can link without acquiring member status or prefix',async()=>{
+ const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0),roleLabel:'old member prefix'}),portal=await session(outsider,PORTAL);
+ const original=await db.serverRecord.findMany({orderBy:{id:'asc'}});const link=await gameLink();
+ assert.deepEqual(await visibleServers(portal),[]);assert.equal((await webLink(link,portal).expect(403)).body.code,'membership_required');
+ await publicServer();
+ assert.deepEqual(await db.serverRecord.findMany({where:{id:{in:original.map(row=>row.id)}},orderBy:{id:'asc'}}),original);
+ assert.deepEqual(await visibleServers(portal),[{id:'campus',label:'학교 인증 공개 서버',sensitive:false}]);
+ await webLink(link,portal).expect(200);await confirmGame(link).expect(200);
+ const result=await policy({uuid:link.minecraftUuid});assert.equal(result.status,'active');assert.deepEqual(result.allowedServerIds,['campus']);assert.equal(result.display.roleLabel,'');assert.ok(Date.parse(result.expiresAt)-Date.parse(result.issuedAt)>59000);
+ const profile=(await browser(request(http).get('/v1/me'),portal).expect(200)).body;assert.equal(profile.membership.status,'inactive');assert.equal(profile.membership.effectiveStatus,'revoked');
+ assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked',subjectId:outsider.id}}),1);
+});
+
+test('roster, members and selected keep the active membership gate even when the same nonmember has university access',async()=>{
+ const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(Date.now()+3600000)}),portal=await session(outsider,PORTAL);
+ await publicServer();await heartbeat('paper',[{id:'club',label:'회원 전용 비공개 이름'},{id:'selected',label:'선택 회원 전용 이름'}]);
+ await settings('club',{enabled:true,accessMode:'members'});await settings('selected',{enabled:true,accessMode:'selected',allowedSubjectIds:[outsider.id]});
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryGuest',subjectId:outsider.id}});
+ assert.deepEqual((await policy(identity)).allowedServerIds,['campus']);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['campus']);
+ const response=JSON.stringify(await visibleServers(portal));assert.ok(!response.includes('회원 전용'));assert.ok(!response.includes('lobby'));assert.ok(!response.includes('survival'));
+ await settings('campus',{enabled:false});const denied=await policy(identity);assert.deepEqual(denied.allowedServerIds,[]);assert.equal(denied.status,'revoked');assert.deepEqual(await visibleServers(portal),[]);
+});
+
+test('university still requires current real school identity, global non-suspension and personal scope',async()=>{
+ await publicServer();const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}),portal=await session(outsider,PORTAL);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryBounds',subjectId:outsider.id}});
+ const base={identityProvider:'usaint',universityVerifiedUntil:new Date(Date.now()+3600000),accessSuspended:false,membershipStatus:'inactive',scopeRestricted:false,scopeLimit:[]};
+ for(const change of [{accessSuspended:true},{membershipStatus:'suspended'},{universityVerifiedUntil:new Date(0)},{universityVerifiedUntil:null},{identityProvider:'development'},{identityProvider:'unknown'},{scopeRestricted:true,scopeLimit:[]}]){
+  await db.subject.update({where:{id:outsider.id},data:{...base,...change}});const denied=await policy(identity);assert.notEqual(denied.status,'active');assert.deepEqual(denied.allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+ }
+ await db.subject.update({where:{id:outsider.id},data:{...base,scopeRestricted:true,scopeLimit:['campus']}});assert.deepEqual((await policy(identity)).allowedServerIds,['campus']);
+});
+
+test('mixed university/member policy expires at roster TTL and recomputes to university alone after expiry',async()=>{
+ await publicServer();const rosterUntil=new Date(Date.now()+20000),schoolUntil=new Date(Date.now()+45000);
+ const member=await subject({verifiedUntil:rosterUntil,universityVerifiedUntil:schoolUntil,roleLabel:'회원'}),portal=await session(member,PORTAL);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryExpiry',subjectId:member.id}});
+ const mixed=await policy(identity);assert.deepEqual(mixed.allowedServerIds,['campus','lobby','survival']);assert.equal(Date.parse(mixed.expiresAt),rosterUntil.getTime());assert.equal(mixed.display.roleLabel,'회원');
+ await db.subject.update({where:{id:member.id},data:{verifiedUntil:new Date(0)}});
+ const campus=await policy(identity);assert.equal(campus.status,'active');assert.deepEqual(campus.allowedServerIds,['campus']);assert.equal(campus.display.roleLabel,'');assert.equal(Date.parse(campus.expiresAt),schoolUntil.getTime());assert.ok(campus.policyVersion>mixed.policyVersion);
+ assert.equal((await browser(request(http).get('/v1/me'),portal).expect(200)).body.membership.effectiveStatus,'stale');
+ await db.subject.update({where:{id:member.id},data:{universityVerifiedUntil:new Date(0)}});const denied=await policy(identity);assert.equal(denied.status,'stale');assert.deepEqual(denied.allowedServerIds,[]);assert.ok(denied.policyVersion>campus.policyVersion);
+});
+
+test('university-only personal scope ignores unused roster TTL while empty active-member scope is not active game authorization',async()=>{
+ await publicServer();const member=await subject({verifiedUntil:new Date(Date.now()+10000),scopeRestricted:true,scopeLimit:['campus']});
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryLimited',subjectId:member.id}});
+ const campus=await policy(identity);assert.deepEqual(campus.allowedServerIds,['campus']);assert.equal(Date.parse(campus.expiresAt)-Date.parse(campus.issuedAt),60000);
+ await db.subject.update({where:{id:member.id},data:{scopeLimit:[]}});const denied=await policy(identity);assert.equal(denied.status,'revoked');assert.deepEqual(denied.allowedServerIds,[]);
+});
+
+test('university-only access with a member prefix caps the display lease at membership expiry',async()=>{
+ await publicServer();const expiry=new Date(Date.now()+15000),member=await subject({verifiedUntil:expiry,roleLabel:'회원',scopeRestricted:true,scopeLimit:['campus']});
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryPrefix',subjectId:member.id}});
+ const before=await policy(identity);assert.deepEqual(before.allowedServerIds,['campus']);assert.equal(before.display.roleLabel,'회원');assert.equal(Date.parse(before.expiresAt),expiry.getTime());
+ await db.subject.update({where:{id:member.id},data:{verifiedUntil:new Date(0)}});const after=await policy(identity);
+ assert.equal(after.status,'active');assert.deepEqual(after.allowedServerIds,['campus']);assert.equal(after.display.roleLabel,'');assert.equal(Date.parse(after.expiresAt)-Date.parse(after.issuedAt),60000);assert.ok(after.policyVersion>before.policyVersion);
+});
+
+test('game completion rechecks university eligibility after web approval and rolls back confirmation when permission disappears',async()=>{
+ await publicServer();const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}),portal=await session(outsider,PORTAL),link=await gameLink();
+ await webLink(link,portal).expect(200);await settings('campus',{enabled:false});await confirmGame(link).expect(403);
+ const pending=await db.linkSession.findUnique({where:{id:link.id}});assert.equal(pending.gameConfirmedAt,null);assert.equal(pending.status,'pending');assert.equal((await policy({uuid:link.minecraftUuid})).status,'unlinked');
+ await settings('campus',{enabled:true});await db.subject.update({where:{id:outsider.id},data:{accessSuspended:true}});await confirmGame(link).expect(403);
+ await db.subject.update({where:{id:outsider.id},data:{accessSuspended:false}});await confirmGame(link).expect(200);assert.equal((await policy({uuid:link.minecraftUuid})).status,'active');
+});
+
+test('admin eligibility can restore a university-only nonmember without expanding club scopes',async()=>{
+ await publicServer();const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0),accessSuspended:true,scopeRestricted:true,scopeLimit:[]});
+ const rows=(await browser(request(http).get('/v1/admin/members')).expect(200)).body.members;assert.deepEqual(rows.find(row=>row.id===outsider.id).eligibleServerIds,['campus']);
+ await browser(request(http).put(`/v1/admin/members/${outsider.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['lobby']}).expect(403);
+ await browser(request(http).put(`/v1/admin/members/${outsider.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['campus']}).expect(200);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryRestore',subjectId:outsider.id}});assert.deepEqual((await policy(identity)).allowedServerIds,['campus']);
+});
+
+test('profile membership freshness is independent from school freshness while all game scopes still require school verification',async()=>{
+ await publicServer();const member=await subject({universityVerifiedUntil:new Date(0)}),portal=await session(member,PORTAL);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistrySchool',subjectId:member.id}});
+ const profile=(await browser(request(http).get('/v1/me'),portal).expect(200)).body;
+ assert.equal(profile.membership.status,'active');assert.equal(profile.membership.effectiveStatus,'active');assert.equal(profile.universityVerifiedUntil,new Date(0).toISOString());
+ const denied=await policy(identity);assert.equal(denied.status,'stale');assert.deepEqual(denied.allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+});
+
+test('additive university migration keeps an allowlisted database constraint',async()=>{
+ await publicServer();assert.equal((await db.serverRecord.findUnique({where:{id:'campus'}})).accessMode,'university');
+ await assert.rejects(db.serverRecord.create({data:{id:'unsupported',label:'Unsupported',enabled:true,accessMode:'everyone'}}),/ServerRecord_accessMode_check/);
+ assert.equal(await db.serverRecord.count({where:{id:'unsupported'}}),0);
 });

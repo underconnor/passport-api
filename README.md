@@ -8,14 +8,14 @@
 
 - PostgreSQL에 저장하는 브라우저 세션, 로그인 시 세션 회전, host/port별 audience, 사용자·관리자 쿠키 분리, HttpOnly·SameSite와 Origin/CSRF 검증
 - 서비스 Bearer 인증, 5분 단회 연결 URL, 웹·게임 양쪽 확인, 접속 세션별 상태 조회, 원자적 연결·취소·재사용 차단
-- UUID별 단조 증가 정책 버전, 최대 60초 lease, 회원·명부 유효기간 만료 시 차단, 변경 outbox 기록
+- UUID별 단조 증가 정책 버전, 최대 60초 lease, 서버별 학교·명부 자격 만료 시 차단, 변경 outbox 기록
 - 봇 전용 링크와 학교 동의로 검증한 Discord 연결, 역할 지급·회수 작업과 재시도. 기존 수동 ID는 참고 정보로만 유지하고 해제는 관리자만 수행
 - 명시적으로 켜는 합성 개발 회원·비회원. `NODE_ENV=production`에서는 개발 인증 시작 자체를 거부
 - 학교 공식 로그인 → 브라우저에 묶인 단회 콜백 → SAP 토큰 교환 → 학교 학번 대조, HMAC 신원 매칭과 세션 회전
 - Google Sheets 읽기 전용 어댑터, 원자적 명부 snapshot 반영, 60초 자동 동기화와 15분 freshness, 위험 변경 digest 승인
 - 관리자 학교 인증 + 최초 등록 코드 + 기본 필수 TOTP, 명시적 `ADMIN_MFA_REQUIRED=false` 옵션, 회원 조회·접속 정지·서버 범위 제한·Minecraft 연결 해제·감사 조회
 - 서비스 인증으로 보호하는 outbox cursor API, 유실·보관 기간 경과·DB 복원 시 전체 재검사 신호
-- Paper·Velocity heartbeat를 통한 비활성 서버 발견, DB 기반 서버 설정, 명부/전체 회원/선택 회원 범위와 개인 제한의 교집합
+- Paper·Velocity heartbeat를 통한 비활성 서버 발견, DB 기반 서버 설정, 명부/전체 회원/선택 회원과 명시적 학교 전체(`university`) 범위, 개인 제한의 교집합
 - 고정 버전 개인정보 안내·명시적 동의 이력, 학교 로그인 후 새 세션에 묶인 자동 웹 확인, 같은 origin에서 제공하는 Mojang 스킨
 - 만료 세션 정리와 단일 인스턴스용 요청 제한
 

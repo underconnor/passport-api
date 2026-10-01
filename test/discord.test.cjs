@@ -60,6 +60,16 @@ test('Discord linking requires explicit current consent and valid active school 
  for(const change of [{membershipStatus:'inactive'},{membershipStatus:'active',accessSuspended:true},{accessSuspended:false,universityVerifiedUntil:new Date(0)}]){await db.subject.update({where:{id:member.subjectId},data:change});assert.equal((await send({token:link.token,consent}).expect(403)).body.code,'membership_required');}
  assert.equal(await db.discordIdentity.count(),0);assert.equal(await db.consentReceipt.count(),0);
 });
+test('university Minecraft access never grants a nonmember Discord membership role',async()=>{
+ await db.serverRecord.create({data:{id:'campus_discord_test',label:'Synthetic university server',enabled:true,accessMode:'university'}});
+ try {
+  await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'inactive',verifiedUntil:new Date(0)}});
+  const allowed=(await browser(request(http).get('/v1/me/servers'),member,false).expect(200)).body.servers;
+  assert.deepEqual(allowed.map(row=>row.id),['campus_discord_test']);
+  const link=await createLink();const rejected=await browser(request(http).post(`${path(link)}/web-confirm`),member).send({token:link.token,consent}).expect(403);
+  assert.equal(rejected.body.code,'membership_required');assert.equal(await db.discordIdentity.count(),0);assert.equal(await db.discordRoleState.count(),0);
+ } finally {await db.serverRecord.delete({where:{id:'campus_discord_test'}});}
+});
 test('Discord completion is one-to-one and atomic with current consent, audit and durable role intent',async()=>{
  await db.subject.update({where:{id:member.subjectId},data:{discordId:userId,discordUpdatedAt:new Date()}});assert.equal((await profile()).discordConnection,null);
  const link=await createLink();const results=await Promise.all([browser(request(http).post(`${path(link)}/web-confirm`),member).send({token:link.token,consent}),browser(request(http).post(`${path(link)}/web-confirm`),member).send({token:link.token,consent})]);assert.deepEqual(results.map(x=>x.status).sort(),[200,409]);

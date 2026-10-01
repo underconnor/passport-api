@@ -7,17 +7,22 @@ import { adminContext } from './admin';
 import { policyTransaction } from './database';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
-export type ServerSettings = { label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
-type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit'>;
+export type ServerSettings = { label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
+export type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>;
+type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
 
 /** This is shared by policy, portal listings and the administrator's eligibility view. */
-export function permittedServers(subject: ScopeSubject, servers: ServerRecord[], active: boolean, applyPersonalLimit = true) {
-  if (!active) return [];
+export function permittedServers(subject: ScopeSubject, servers: ServerRecord[], { now = new Date(), allowDevelopment = false, applyPersonalLimit = true }: ScopeOptions = {}) {
+  const university = subject.identityProvider === 'usaint' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now);
+  const development = allowDevelopment && subject.identityProvider === 'development';
+  if (subject.accessSuspended || subject.membershipStatus === 'suspended' || (!university && !development)) return [];
+  const member = subject.membershipStatus === 'active' && subject.verifiedUntil > now;
   return servers.filter(server => server.enabled
-    && (server.accessMode === 'roster' ? subject.allowedServerIds.includes(server.id)
-      : server.accessMode === 'members' ? true
-        : server.accessMode === 'selected' && server.allowedSubjectIds.includes(subject.id))
+    && (server.accessMode === 'university' ? university : member && (
+      server.accessMode === 'roster' ? subject.allowedServerIds.includes(server.id)
+        : server.accessMode === 'members' ? true
+          : server.accessMode === 'selected' && server.allowedSubjectIds.includes(subject.id)))
     && (!applyPersonalLimit || !subject.scopeRestricted || subject.scopeLimit.includes(server.id)));
 }
 
