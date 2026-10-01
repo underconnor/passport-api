@@ -160,7 +160,7 @@ test('school provider and admin remain explicitly unavailable',async()=>{
  await browser(request(http).get('/v1/admin/overview'),user).expect(403);
 });
 test('privacy notice and explicit current consent gate linking and create one immutable receipt',async()=>{
- const notice=await request(http).get('/v1/privacy').expect(200);assert.equal(notice.body.version,privacyNotice.version);assert.ok(notice.body.items.length);assert.match(notice.body.retention,/백업/);
+ const notice=await request(http).get('/v1/privacy').expect(200);assert.equal(notice.body.version,privacyNotice.version);assert.ok(notice.body.items.length);assert.equal(notice.body.retention,'폐기 시까지');
  const user=await login();assert.equal(user.profile.privacyConsent.accepted,false);const link=await createLink();
  for(const input of [undefined,{accepted:false,version:privacyNotice.version}]){
   const result=await browser(request(http).post(`/v1/link-sessions/${link.id}/web-confirm`),user).send({token:link.token,consent:input}).expect(400);assert.equal(result.body.code,'consent_required');
