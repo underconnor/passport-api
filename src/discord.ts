@@ -1,3 +1,4 @@
+import { hasServiceCredential } from './service-credentials';
 import { ConflictException, ForbiddenException, GoneException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Prisma, type DiscordLinkSession } from '@prisma/client';
 import type { Request } from 'express';
@@ -23,6 +24,8 @@ async function discordConflict<T>(run: () => Promise<T>): Promise<T> {
 export function discordService(p: PassportService, req: Request) {
   const config = p.config.discord;
   if (!config) throw new ServiceUnavailableException({ code: 'discord_not_configured' });
+  if (hasServiceCredential(req, 'discord')) return config;
+  if (!p.config.legacyServiceAuthEnabled) throw new UnauthorizedException({ code: 'discord_service_unauthorized' });
   const bearer = req.headers.authorization;
   if (!bearer?.startsWith('Bearer ') || !equal(bearer.slice(7), config.serviceToken)) throw new UnauthorizedException({ code: 'discord_service_unauthorized' });
   return config;

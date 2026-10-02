@@ -55,7 +55,6 @@ export const operatorInvitationSchema = z.object({ subjectId: uuidSchema, role: 
 export const operatorRoleSchema = z.object({ role: adminRoleSchema }).strict();
 export const emptyMutationSchema = z.object({}).strict();
 
-export const statisticsSettingsSchema = z.object({ enabled: z.boolean(), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const statisticsResetScopeSchema = z.discriminatedUnion('scope', [
   z.object({ scope: z.literal('subject'), subjectId: uuidSchema }).strict(),
   z.object({ scope: z.literal('server'), serverId: serverIdSchema }).strict(),
@@ -63,3 +62,7 @@ export const statisticsResetScopeSchema = z.discriminatedUnion('scope', [
 ]);
 const resetConfirmation = { expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmation: z.string().max(100) };
 export const statisticsResetSchema = z.discriminatedUnion('scope', [statisticsResetScopeSchema.options[0].extend(resetConfirmation), statisticsResetScopeSchema.options[1].extend(resetConfirmation), statisticsResetScopeSchema.options[2].extend(resetConfirmation)]);
+
+const statisticsDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
+export const statisticsQuerySchema = z.object({ from: statisticsDateSchema.optional(), to: statisticsDateSchema.optional() }).strict().refine(value => (!value.from && !value.to) || Boolean(value.from && value.to && value.from <= value.to && Date.parse(value.to) - Date.parse(value.from) <= 365 * 86400000));
+export const statisticsExportSchema = z.object({ from: statisticsDateSchema.optional(), to: statisticsDateSchema.optional(), serverId: serverIdSchema.optional(), subjectId: uuidSchema.optional() }).strict().refine(value => (!value.from && !value.to) || Boolean(value.from && value.to && value.from <= value.to && Date.parse(value.to) - Date.parse(value.from) <= 365 * 86400000));

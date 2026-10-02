@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { authorizeServiceCredential, listCredentials, createCredential, revokeCredential, credentialSchema } from './service-credentials';
 import { Body, Controller, Delete, Get, HttpCode, HttpException, Module, Param, Post, Put, Query, Req, Res, ServiceUnavailableException } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Request, Response, NextFunction } from 'express';
@@ -13,8 +14,11 @@ import { operatorInvitationSchema, operatorRoleSchema, emptyMutationSchema } fro
 import { memberQuerySchema, deleteMemberSchema, playerQuerySchema, presenceSchema, activityBatchSchema } from './security';
 import { playerLookup, reportPresence, renewPrivacyConsent } from './game-identity';
 import { collectActivity, statistics } from './activity';
-import { statisticsSettings, previewStatisticsReset, resetStatistics } from './statistics-controls';
-import { statisticsSettingsSchema, statisticsResetSchema, statisticsResetScopeSchema } from './security';
+import { previewStatisticsReset, resetStatistics } from './statistics-controls';
+import { statisticsQuerySchema, statisticsExportSchema, statisticsResetSchema, statisticsResetScopeSchema } from './security';
+import { exportStatistics } from './statistics-export';
+import { adminObservability, observedOperation } from './observability';
+import { getManual, adminManual, updateManual, manualSettingsSchema } from './manual';
 import { RosterSyncError } from './membership-sync';
 import { UniversityVerificationError } from './integrations/usaint';
 import { adminServers, heartbeatServers, setServerSettings } from './registry';
@@ -35,7 +39,7 @@ class PassportController {
   @Get('v1/auth/university/callback/:state') async universityReturn(@Req() req: Request, @Res() res: Response, @Param('state') state: string, @Query() query: unknown) {
     try {
       if (!/^[A-Za-z0-9_-]{43}$/.test(state)) throw new Error('invalid_state');
-      const target = await finishUniversity(this.passport, req, res, state, parse(universityCallbackSchema, query));
+      const target = await observedOperation('university', () => finishUniversity(this.passport, req, res, state, parse(universityCallbackSchema, query)));
       res.redirect(303, target);
     } catch (error) {
       const code = error instanceof UniversityVerificationError ? `university_${error.code}` : error instanceof HttpException ? (error.getResponse() as { code?: string }).code : 'university_verification_failed';
@@ -71,13 +75,16 @@ class PassportController {
   @Post('v1/link-sessions/:id/web-confirm') @HttpCode(200) webConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { const input = parse(webLinkConfirmSchema, body); return this.passport.webConfirm(req, parse(uuidSchema, id), input.token, input.consent); }
   @Post('v1/link-sessions/:id/game-confirm') @HttpCode(200) gameConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.gameConfirm(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Delete('v1/link-sessions/:id') @HttpCode(204) cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.cancelLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
-  @Get('v1/minecraft/policies/:uuid') policy(@Req() req: Request, @Param('uuid') uuid: string) { return this.passport.policy(req, parse(uuidSchema, uuid)); }
+  @Get('v1/minecraft/policies/:uuid') policy(@Req() req: Request, @Param('uuid') uuid: string) { return observedOperation('policy', () => this.passport.policy(req, parse(uuidSchema, uuid))); }
   @Get('v1/minecraft/servers') async registry(@Req() req: Request) { this.passport.service(req); return { servers: await this.passport.db.serverRecord.findMany({ where: { enabled: true }, orderBy: { id: 'asc' }, select: { id: true, label: true, sensitive: true } }) }; }
   @Post('v1/minecraft/servers/heartbeat') @HttpCode(200) heartbeat(@Req() req: Request, @Body() body: unknown) { return heartbeatServers(this.passport, req, parse(serverHeartbeatSchema, body)); }
-  @Get('v1/minecraft/events') events(@Req() req: Request, @Query('after') after?: string) { return this.passport.policyEvents(req, after); }
+  @Get('v1/minecraft/events') events(@Req() req: Request, @Query('after') after?: string) { return observedOperation('events', () => this.passport.policyEvents(req, after)); }
   @Get('v1/admin/session') adminSession(@Req() req: Request) { return adminStatus(this.passport, req); }
   @Post('v1/admin/enrollment') @HttpCode(200) enroll(@Req() req: Request, @Body() body: unknown) { return beginEnrollment(this.passport, req, parse(enrollmentSchema, body).bootstrapToken); }
   @Post('v1/admin/mfa') @HttpCode(200) mfa(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Body() body: unknown) { return verifyAdminMfa(this.passport, req, res, parse(mfaSchema, body).code); }
+  @Get('v1/admin/service-credentials') serviceCredentials(@Req() req: Request) { return listCredentials(this.passport, req); }
+  @Post('v1/admin/service-credentials') @HttpCode(200) createServiceCredential(@Req() req: Request, @Body() body: unknown) { return createCredential(this.passport, req, parse(credentialSchema, body)); }
+  @Delete('v1/admin/service-credentials/:id') revokeServiceCredential(@Req() req: Request, @Param('id') id: string) { return revokeCredential(this.passport, req, parse(uuidSchema, id)); }
   @Get('v1/admin/operators') operators(@Req() req: Request) { return listOperators(this.passport, req); }
   @Post('v1/admin/operator-invitations') @HttpCode(200) inviteOperator(@Req() req: Request, @Body() body: unknown) { return inviteOperator(this.passport, req, parse(operatorInvitationSchema, body)); }
   @Get('v1/admin/operator-invitations/pending') pendingOperators(@Req() req: Request) { return pendingOperatorInvitations(this.passport, req); }
@@ -92,13 +99,16 @@ class PassportController {
   @Post('v1/minecraft/presence') @HttpCode(200) presence(@Req() req: Request, @Body() body: unknown) { return reportPresence(this.passport, req, parse(presenceSchema, body)); }
   @Post('v1/minecraft/stats/batches') @HttpCode(200) activity(@Req() req: Request, @Body() body: unknown) { return collectActivity(this.passport, req, parse(activityBatchSchema, body)); }
   @Get('v1/minecraft/players/:uuid/stats') playerStats(@Req() req: Request, @Param('uuid') uuid: string) { return statistics(this.passport, req, 'minecraft', parse(uuidSchema, uuid)); }
-  @Get('v1/me/statistics-settings') statisticsSettings(@Req() req: Request) { return statisticsSettings(this.passport, req); }
-  @Put('v1/me/statistics-settings') putStatisticsSettings(@Req() req: Request, @Body() body: unknown) { return statisticsSettings(this.passport, req, parse(statisticsSettingsSchema, body)); }
   @Post('v1/admin/stats/reset/preview') @HttpCode(200) previewStatisticsReset(@Req() req: Request, @Body() body: unknown) { return previewStatisticsReset(this.passport, req, parse(statisticsResetScopeSchema, body)); }
   @Post('v1/admin/stats/reset') @HttpCode(200) resetStatistics(@Req() req: Request, @Body() body: unknown) { return resetStatistics(this.passport, req, parse(statisticsResetSchema, body)); }
-  @Get('v1/me/stats') myStats(@Req() req: Request) { return statistics(this.passport, req, 'me'); }
-  @Get('v1/admin/stats') adminStats(@Req() req: Request) { return statistics(this.passport, req, 'admin'); }
-  @Get('v1/admin/members/:id/stats') memberStats(@Req() req: Request, @Param('id') id: string) { return statistics(this.passport, req, 'member', parse(uuidSchema, id)); }
+  @Get('v1/me/stats') myStats(@Req() req: Request, @Query() query: unknown) { return statistics(this.passport, req, 'me', undefined, parse(statisticsQuerySchema, query)); }
+  @Get('v1/admin/stats') adminStats(@Req() req: Request, @Query() query: unknown) { return statistics(this.passport, req, 'admin', undefined, parse(statisticsQuerySchema, query)); }
+  @Get('v1/admin/members/:id/stats') memberStats(@Req() req: Request, @Param('id') id: string, @Query() query: unknown) { return statistics(this.passport, req, 'member', parse(uuidSchema, id), parse(statisticsQuerySchema, query)); }
+  @Post('v1/admin/stats/export') @HttpCode(200) async exportStatistics(@Req() req: Request, @Res() res: Response, @Body() body: unknown) { const result = await exportStatistics(this.passport, req, parse(statisticsExportSchema, body)); res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="passport-statistics.xlsx"'); res.setHeader('Cache-Control', 'private, no-store'); res.send(result); }
+  @Get('v1/manual') manual() { return getManual(this.passport); }
+  @Get('v1/admin/observability') adminObservability(@Req() req: Request) { return adminObservability(this.passport, req); }
+  @Get('v1/admin/manual') adminManual(@Req() req: Request) { return adminManual(this.passport, req); }
+  @Put('v1/admin/manual') updateManual(@Req() req: Request, @Body() body: unknown) { return updateManual(this.passport, req, parse(manualSettingsSchema, body)); }
   @Post('v1/me/privacy/consent') @HttpCode(200) privacyConsent(@Req() req: Request, @Body() body: unknown) { return renewPrivacyConsent(this.passport, req, parse(discordConsentSchema, body).consent); }
   @Get('v1/admin/servers') adminServers(@Req() req: Request) { return adminServers(this.passport, req); }
   @Put('v1/admin/servers/:id') serverSettings(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return setServerSettings(this.passport, req, parse(serverIdSchema, id), parse(serverSettingsSchema, body)); }
@@ -147,6 +157,7 @@ export async function createApp() {
     else if (error instanceof HttpException) response.status(error.getStatus()).json(error.getResponse());
     else response.status(503).json({ code: 'temporarily_unavailable' });
   } });
+  app.useGlobalGuards({ canActivate: context => authorizeServiceCredential(app.get(PassportService), context.switchToHttp().getRequest<Request>()) });
   app.enableShutdownHooks();
   await app.init();
   return app;

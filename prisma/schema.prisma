@@ -310,6 +310,7 @@ model ActivityGeneration {
   minecraftUuid String @db.Uuid
   createdAt DateTime @default(now())
   totals ActivityTotal[]
+  daily ActivityDaily[]
   @@index([subjectId])
 }
 model ActivityTotal {
@@ -324,6 +325,8 @@ model ActivityTotal {
   mobKills BigInt @default(0)
   playerKills BigInt @default(0)
   distanceCm BigInt @default(0)
+  firstCollectedAt DateTime?
+  lastCollectedAt DateTime?
   @@id([epoch, serverId])
 }
 model ActivityBatch {
@@ -332,4 +335,49 @@ model ActivityBatch {
   received Int
   ignored Int
   createdAt DateTime @default(now())
+}
+
+// Daily buckets start at rollout; old cumulative records are never backfilled.
+model ActivityDaily {
+  epoch String @db.Uuid
+  generation ActivityGeneration @relation(fields: [epoch], references: [epoch], onDelete: Cascade)
+  serverId String
+  date DateTime @db.Date
+  playSeconds BigInt @default(0)
+  blocksBroken BigInt @default(0)
+  blocksPlaced BigInt @default(0)
+  damageTakenMilli BigInt @default(0)
+  deaths BigInt @default(0)
+  mobKills BigInt @default(0)
+  playerKills BigInt @default(0)
+  distanceCm BigInt @default(0)
+  firstCollectedAt DateTime
+  lastCollectedAt DateTime
+  @@id([epoch, serverId, date])
+  @@index([date, serverId])
+}
+model StatisticsHistory {
+  id String @id @default("main")
+  availableFrom DateTime @default(now())
+}
+model ManualSettings {
+  id String @id @default("main")
+  notionUrl String?
+  embedUrl String?
+  title String @default("매뉴얼")
+  revision Int @default(1)
+  updatedAt DateTime @updatedAt
+}
+
+model ServiceCredential {
+  id String @id @default(uuid()) @db.Uuid
+  serviceId String
+  audience String
+  tokenHash String @unique
+  scopes String[]
+  serverIds String[]
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([serviceId, createdAt])
 }

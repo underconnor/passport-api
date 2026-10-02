@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { Request } from 'express';
 import { randomUUID } from 'node:crypto';
@@ -6,14 +6,12 @@ import type { PassportService } from './passport.service';
 import { adminContext, protectAdministratorTarget, requireAdminTransaction } from './admin';
 import { counterNames, emptyCounters } from './activity';
 import { policyTransaction } from './database';
-import { gameConsent } from './game-identity';
 import { hash } from './security';
 
 export type ResetScope = { scope: 'subject'; subjectId: string } | { scope: 'server'; serverId: string } | { scope: 'all' };
 export type ResetInput = ResetScope & { expectedRevision: string; confirmation: string };
 const RESET_CONFIRMATION = '통계 초기화';
 const MAX_RESET_SUBJECTS = 5000, MAX_RESET_ROWS = 50000;
-const revision = (subject: { id: string; statisticsEnabled: boolean; statisticsRevision: number }) => hash(JSON.stringify([subject.id, subject.statisticsEnabled, subject.statisticsRevision]));
 
 async function rotate(tx: Prisma.TransactionClient, subjectId?: string) {
   const identities = await tx.minecraftIdentity.findMany({ where: subjectId ? { subjectId } : { subjectId: { not: null } }, select: { uuid: true } });
@@ -21,24 +19,6 @@ async function rotate(tx: Prisma.TransactionClient, subjectId?: string) {
     const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { telemetryEpoch: randomUUID(), policyVersion: { increment: 1 }, policyFingerprint: '' } });
     await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
   }
-}
-
-export async function statisticsSettings(p: PassportService, req: Request, input?: { enabled: boolean; expectedRevision: string }) {
-  const context = input ? await p.mutation(req) : await p.context(req, true);
-  return policyTransaction(p.db, async tx => {
-    const session = await tx.webSession.findUnique({ where: { id: context.session.id }, include: { subject: true } });
-    if (!session?.subject || session.expiresAt <= new Date() || session.tokenHash !== hash(context.token) || session.subjectId !== context.session.subjectId) throw new UnauthorizedException({ code: 'session_required' });
-    let subject = session.subject;
-    if (input) {
-      if (input.expectedRevision !== revision(subject)) throw new ConflictException({ code: 'statistics_settings_changed' });
-      if (subject.statisticsEnabled !== input.enabled) {
-        subject = await tx.subject.update({ where: { id: subject.id }, data: { statisticsEnabled: input.enabled, statisticsRevision: { increment: 1 } } });
-        await rotate(tx, subject.id);
-        await tx.auditEvent.create({ data: { action: 'subject.statistics_collection_updated', subjectId: subject.id, actorSubjectId: subject.id, details: { enabled: input.enabled } } });
-      }
-    }
-    return { enabled: subject.statisticsEnabled, revision: revision(subject), consentGranted: await gameConsent(tx, subject.id) };
-  });
 }
 
 async function resetPreview(tx: Prisma.TransactionClient, scope: ResetScope, actorSubjectId: string) {
@@ -81,6 +61,7 @@ export async function resetStatistics(p: PassportService, req: Request, input: R
     await requireAdminTransaction(p, tx, actor);
     const { where, preview } = await resetPreview(tx, scope, actor.session.subjectId!);
     if (preview.expectedRevision !== input.expectedRevision) throw new ConflictException({ code: 'statistics_reset_changed' });
+    await tx.activityDaily.deleteMany({ where: scope.scope === 'subject' ? { generation: { subjectId: scope.subjectId } } : scope.scope === 'server' ? { serverId: scope.serverId } : {} });
     await tx.activityTotal.deleteMany({ where });
     // All linked epochs rotate for a server/all reset, including players who only
     // have offline queued batches and have never uploaded a generation yet.

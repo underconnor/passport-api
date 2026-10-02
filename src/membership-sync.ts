@@ -4,6 +4,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { policyTransaction, serializable } from './database';
 import { refreshDiscordSubject } from './discord-policy';
 import { readGoogleSheet, RosterEntry, SheetsConfig, sheetsConfig, validateSnapshotChange } from './integrations/sheets';
+import { observedOperation } from './observability';
 
 const currentSnapshotId = 'current';
 const defaultMaxAgeMs = 15 * 60 * 1000;
@@ -120,8 +121,10 @@ export async function previewRosterSync(db: PrismaClient, env: NodeJS.ProcessEnv
   return previewRosterSnapshot(db, await readSnapshot(config), options);
 }
 export async function runRosterSync(db: PrismaClient, env: NodeJS.ProcessEnv = process.env, approval: { expectedApprovalDigest?: string; authorize?: RosterSyncOptions['authorize'] } = {}) {
-  const { config, options } = integrationConfig(env);
-  return applyRosterSnapshot(db, await readSnapshot(config), { ...options, ...approval });
+  return observedOperation('roster_sync', async () => {
+    const { config, options } = integrationConfig(env);
+    return applyRosterSnapshot(db, await readSnapshot(config), { ...options, ...approval });
+  });
 }
 
 export function startMembershipSync(db: PrismaClient, env: NodeJS.ProcessEnv = process.env) {

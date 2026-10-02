@@ -1,7 +1,7 @@
 export interface ServerDefinition { id: string; label: string; sensitive?: boolean }
 export interface Config {
   authMode: 'development' | 'university-disabled' | 'university'; production: boolean; databaseUrl: string;
-  serviceToken: string; sessionSecret: string; webOrigin: string; origins: string[];
+  serviceToken: string; legacyServiceAuthEnabled: boolean; sessionSecret: string; webOrigin: string; origins: string[];
   bindHost: string; port: number; servers: ServerDefinition[];
   adminOrigin: string; matchingSecret: string; encryptionKey: string; adminBootstrapToken?: string;
   trustProxyHops: number; adminMfaRequired: boolean;
@@ -17,6 +17,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const origins = [...new Set([webOrigin, ...(env.ADMIN_ORIGIN ? [new URL(env.ADMIN_ORIGIN).origin] : [])])];
   if (origins.some(o => !/^https?:\/\//.test(o) || (production && !o.startsWith('https://')))) throw new Error('Invalid browser origins; production requires HTTPS');
   const serviceToken = required('API_SERVICE_TOKEN');
+  const legacy = env.PASSPORT_LEGACY_SERVICE_AUTH_ENABLED ?? 'true';
+  if (!['true', 'false'].includes(legacy)) throw new Error('PASSPORT_LEGACY_SERVICE_AUTH_ENABLED must be true or false');
+  const legacyServiceAuthEnabled = legacy === 'true';
   const sessionSecret = required('SESSION_SECRET');
   if (serviceToken.length < 32 || sessionSecret.length < 32 || serviceToken === sessionSecret) throw new Error('Separate service/session secrets of at least 32 characters required');
   const matchingSecret = env.ROSTER_MATCHING_SECRET ?? '';
@@ -43,5 +46,5 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const trustProxyHops = Number(env.TRUST_PROXY_HOPS ?? 0);
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 3) throw new Error('Invalid trusted proxy hop count');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops, adminMfaRequired, discord };
+  return { authMode: authMode as Config['authMode'], production, databaseUrl: required('DATABASE_URL'), serviceToken, legacyServiceAuthEnabled, sessionSecret, webOrigin, origins, bindHost: env.BIND_HOST ?? '127.0.0.1', port, servers, adminOrigin, matchingSecret, encryptionKey, adminBootstrapToken, trustProxyHops, adminMfaRequired, discord };
 }

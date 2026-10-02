@@ -34,38 +34,27 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();});
 
-async function settings(user){return (await browser(request(http).get('/v1/me/statistics-settings'),user).expect(200)).body;}
-async function setCollection(user,enabled,changes={},status=200){return browser(request(http).put('/v1/me/statistics-settings'),user,true).send({enabled,expectedRevision:(await settings(user)).revision,...changes}).expect(status);}
 async function serverCollection(id,enabled,user=admin,status=200){const s=await db.serverRecord.findUnique({where:{id}});return browser(request(http).put(`/v1/admin/servers/${id}`),user,true).send({label:s.label,sensitive:s.sensitive,enabled:s.enabled,accessMode:s.accessMode,allowedSubjectIds:s.allowedSubjectIds,expectedUpdatedAt:s.updatedAt.toISOString(),statisticsEnabled:enabled}).expect(status);}
 async function preview(scope,user=admin,status=200){return browser(request(http).post('/v1/admin/stats/reset/preview'),user,true).send(scope).expect(status);}
 async function reset(scope,pre,user=admin,status=200,changes={}){return browser(request(http).post('/v1/admin/stats/reset'),user,true).send({...scope,expectedRevision:pre.expectedRevision,confirmation:pre.confirmation,...changes}).expect(status);}
 async function own(a){return(await browser(request(http).get('/v1/me/stats'),a.portal).expect(200)).body;}
 async function roleSession(role){const owner=await subject();await db.administrator.create({data:{subjectId:owner.id,enabled:true,role,totpSecret:''}});return session(owner,'admin.example.test');}
 
-test('own collection toggle uses CSRF/current revision and never bypasses missing consent',async()=>{
- const a=await linked(),initial=await settings(a.portal);assert.deepEqual(initial,{enabled:true,revision:initial.revision,consentGranted:true});
- await browser(request(http).put('/v1/me/statistics-settings'),a.portal).send({enabled:false,expectedRevision:initial.revision}).expect(403);
- const off=(await setCollection(a.portal,false)).body;assert.equal(off.enabled,false);assert.notEqual(off.revision,initial.revision);
- assert.equal((await setCollection(a.portal,true,{expectedRevision:initial.revision},409)).body.code,'statistics_settings_changed');
- await db.consentReceipt.deleteMany({where:{subjectId:a.owner.id}});await setCollection(a.portal,true);
- assert.equal((await settings(a.portal)).consentGranted,false);assert.equal((await policy(a.minecraft.uuid)).body.telemetry.enabled,false);
+test('personal collection controls are removed and missing consent still prevents collection',async()=>{
+ const a=await linked({statisticsEnabled:false});
+ await browser(request(http).get('/v1/me/statistics-settings'),a.portal).expect(404);
+ await browser(request(http).put('/v1/me/statistics-settings'),a.portal,true).send({enabled:false,expectedRevision:'0'.repeat(64)}).expect(404);
+ assert.equal((await policy(a.minecraft.uuid)).body.telemetry.enabled,true);
+ assert.equal((await submit(batch(a.minecraft))).body.received,1);
+ await db.consentReceipt.deleteMany({where:{subjectId:a.owner.id}});
+ assert.equal((await policy(a.minecraft.uuid)).body.telemetry.enabled,false);
+ assert.equal((await submit(batch(a.minecraft))).body.ignored,1);
  await browser(request(http).post('/v1/me/stats/reset'),a.portal,true).send({}).expect(404);
-});
-test('own off/on preserves history and presence/name while fencing all old/offline epochs',async()=>{
- const a=await linked();await submit(batch(a.minecraft));const before=(await policy(a.minecraft.uuid)).body;
- await setCollection(a.portal,false);let pol=(await policy(a.minecraft.uuid)).body;
- assert.equal(pol.telemetry.enabled,false);assert.equal(pol.telemetry.presenceEnabled,true);assert.equal(pol.display.displayName,before.display.displayName);assert.equal(pol.telemetry.epoch,null);assert.deepEqual(pol.telemetry.serverIds,[]);
- const during=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});assert.notEqual(during.telemetryEpoch,a.minecraft.telemetryEpoch);
- assert.equal((await submit(batch(a.minecraft))).body.ignored,1);assert.equal((await submit(batch(during))).body.ignored,1);
- assert.equal((await own(a)).totals.playSeconds,60);assert.equal((await own(a)).collection.effective,false);
- await service(request(http).post('/v1/minecraft/presence')).send({serverId:'lobby',observedAt:new Date().toISOString(),players:[a.minecraft.uuid]}).expect(200);assert.equal((await own(a)).presence.online,true);
- await setCollection(a.portal,true);const newer=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});
- assert.notEqual(newer.telemetryEpoch,during.telemetryEpoch);for(const identity of[a.minecraft,during])assert.equal((await submit(batch(identity))).body.ignored,1);
- assert.equal((await submit(batch(newer))).body.received,1);assert.equal((await own(a)).totals.playSeconds,120);
 });
 test('server collection toggle excludes preserved history/totals and policy serverIds without changing admission',async()=>{
  const a=await linked({allowedServerIds:['lobby','survival']});await submit(batch(a.minecraft));await submit(batch(a.minecraft,{serverId:'survival'}));
- await serverCollection('lobby',false);let stats=await own(a);assert.equal(stats.totals.playSeconds,60);assert.deepEqual(stats.collection.excludedServerIds,['lobby']);assert.equal(stats.servers.find(s=>s.serverId==='lobby').collectionEnabled,false);assert.equal(stats.servers.find(s=>s.serverId==='lobby').playSeconds,0);assert.equal(await db.activityTotal.count(),2);
+ await serverCollection('lobby',false);let stats=await own(a);assert.equal(stats.totals.playSeconds,60);assert.deepEqual(stats.collection.excludedServerIds,['lobby']);assert.equal(stats.servers.some(s=>s.serverId==='lobby'),false);assert.equal(await db.activityTotal.count(),2);
+ await service(request(http).post('/v1/minecraft/presence')).send({serverId:'lobby',observedAt:new Date().toISOString(),players:[a.minecraft.uuid]}).expect(200);assert.equal((await own(a)).presence.online,true);
  const pol=(await policy(a.minecraft.uuid)).body;assert.deepEqual(pol.allowedServerIds,['lobby','survival']);assert.deepEqual(pol.telemetry.serverIds,['survival']);assert.equal(pol.telemetry.presenceEnabled,true);
  const off=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});assert.equal((await submit(batch(off))).body.ignored,1);assert.equal((await submit(batch(a.minecraft,{serverId:'survival'}))).body.ignored,1);
  await serverCollection('lobby',true);assert.equal((await own(a)).totals.playSeconds,120);assert.equal((await submit(batch(off))).body.ignored,1);
@@ -98,7 +87,7 @@ test('subject reset deletes all eight counters only for selected subject and fen
 test('reset preview accepts incrementing counters but rejects new target generations or changed epochs',async()=>{
  const a=await linked();await submit(batch(a.minecraft));const scope={scope:'subject',subjectId:a.owner.id},pre=(await preview(scope)).body;
  await submit(batch(a.minecraft));await reset(scope,pre);assert.equal((await own(a)).totals.playSeconds,0);
- const current=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});await submit(batch(current));const stale=(await preview(scope)).body;await setCollection(a.portal,false);await reset(scope,stale,admin,409);
+ const current=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});await submit(batch(current));const stale=(await preview(scope)).body;await serverCollection('lobby',false);await reset(scope,stale,admin,409);await serverCollection('lobby',true);
  const all=(await preview({scope:'all'})).body;const b=await linked();await submit(batch(b.minecraft));await reset({scope:'all'},all,admin,409);
 });
 test('server reset preserves other server confirmed totals and blocks never-before-uploaded offline batches',async()=>{
@@ -112,11 +101,80 @@ test('concurrent reset versus old batch serializes so cleared totals cannot be r
  const all=(await preview({scope:'all'})).body;await reset({scope:'all'},all);const after=await db.minecraftIdentity.findUnique({where:{uuid:a.minecraft.uuid}});assert.notEqual(after.telemetryEpoch,a.minecraft.telemetryEpoch);
 });
 test('all reset includes excluded historical rows, keeps collection preferences and preserves account data',async()=>{
- const a=await linked();await submit(batch(a.minecraft));await serverCollection('lobby',false);await setCollection(a.portal,false);
- const scope={scope:'all'},pre=(await preview(scope)).body;assert.equal(pre.totals.playSeconds,60);await reset(scope,pre);assert.equal(await db.activityTotal.count(),0);assert.ok(await db.subject.findUnique({where:{id:a.owner.id}}));assert.equal((await settings(a.portal)).enabled,false);assert.equal((await db.serverRecord.findUnique({where:{id:'lobby'}})).statisticsEnabled,false);
+ const a=await linked();await submit(batch(a.minecraft));await serverCollection('lobby',false);
+ const scope={scope:'all'},pre=(await preview(scope)).body;assert.equal(pre.totals.playSeconds,60);await reset(scope,pre);assert.equal(await db.activityTotal.count(),0);assert.ok(await db.subject.findUnique({where:{id:a.owner.id}}));assert.equal((await db.serverRecord.findUnique({where:{id:'lobby'}})).statisticsEnabled,false);
 });
-test('concurrent user toggles use optimistic revision and generate one durable policy change',async()=>{
- const a=await linked(),initial=await settings(a.portal),events=await db.policyEvent.count();
- const submitToggle=()=>browser(request(http).put('/v1/me/statistics-settings'),a.portal,true).send({enabled:false,expectedRevision:initial.revision});
- const responses=await Promise.all([submitToggle(),submitToggle()]);assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);assert.equal(await db.policyEvent.count(),events+1);assert.equal(await db.auditEvent.count({where:{action:'subject.statistics_collection_updated'}}),1);
+
+const {unzipSync,strFromU8}=require('fflate');
+const {sealStudentId}=require('../dist/school-identity');
+const {koreaDate}=require('../dist/activity');
+const exportFile=(input={},user=admin,status=200)=>browser(request(http).post('/v1/admin/stats/export'),user,true).send(input).buffer(true).parse((res,callback)=>{const parts=[];res.on('data',chunk=>parts.push(chunk));res.on('end',()=>callback(null,Buffer.concat(parts)));}).expect(status);
+test('XLSX export preserves full identifiers, escapes text, exports eight metrics and excludes disabled servers',async()=>{
+ const key=randomUUID(),studentId='20260001';
+ const a=await linked({universityKey:key,studentIdCiphertext:sealStudentId(studentId,key,p.config.encryptionKey),displayName:'=HYPERLINK("https://invalid.test") & <검증>',discordId:'1555000000000000001',allowedServerIds:['lobby','survival']});
+ await submit(batch(a.minecraft,{records:[{minecraftUuid:a.minecraft.uuid,epoch:a.minecraft.telemetryEpoch,...count,playerKills:3,distanceCm:256}]}));
+ await submit(batch(a.minecraft,{serverId:'survival'}));await serverCollection('survival',false);
+ const result=await exportFile({subjectId:a.owner.id});assert.match(result.headers['content-type'],/spreadsheetml/);assert.match(result.headers['cache-control'],/no-store/);
+ const files=unzipSync(result.body),sheet=strFromU8(files['xl/worksheets/sheet1.xml']);
+ for(const text of [studentId,a.owner.id,a.minecraft.uuid,'1555000000000000001','죽인 플레이어 수','이동 거리 (m)'])assert.ok(sheet.includes(text));
+ assert.ok(sheet.includes('t="inlineStr"'));assert.ok(sheet.includes('=HYPERLINK(&quot;'));assert.ok(!sheet.includes('<f>'));assert.ok(!sheet.includes('survival'));assert.ok(sheet.includes('<v>2.56</v>'));
+ assert.equal(await db.auditEvent.count({where:{action:'admin.statistics_export'}}),1);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.statistics_export'}});assert.ok(!JSON.stringify(audit).includes(studentId));
+});
+test('XLSX export requires admin write, current session, admin host and CSRF',async()=>{
+ await request(http).post('/v1/admin/stats/export').set('Host','admin.example.test').set('Origin','https://admin.example.test').send({}).expect(401);
+ await browser(request(http).post('/v1/admin/stats/export')).send({}).expect(403);
+ await exportFile({},await roleSession('viewer'),403);await exportFile({},(await linked()).portal,403);
+ await service(request(http).post('/v1/admin/stats/export')).send({}).expect(403);
+ await exportFile({},await roleSession('operator'));
+ await exportFile({serverId:'missing'},admin,404);
+ await exportFile({from:'2026-02-30',to:'2026-03-01'},admin,400);
+ assert.equal(await db.auditEvent.count({where:{action:'admin.statistics_export'}}),1);
+});
+test('daily history is idempotent, uses Korean receipt day and only filters prospective rows',async()=>{
+ const a=await linked(),input=batch(a.minecraft);await submit(input);await submit(input);
+ assert.equal(await db.activityDaily.count(),1);let daily=await db.activityDaily.findFirst();assert.equal(daily.playSeconds,60n);assert.equal(daily.date.toISOString().slice(0,10),koreaDate(new Date()));
+ const today=koreaDate(new Date());let stats=(await browser(request(http).get(`/v1/me/stats?from=${today}&to=${today}`),a.portal).expect(200)).body;
+ assert.equal(stats.totals.playSeconds,60);assert.equal(stats.daily[0].playSeconds,60);assert.equal(stats.daily[0].serverId,'lobby');assert.ok(stats.firstCollectedAt);assert.ok(stats.lastCollectedAt);assert.equal(stats.period.basis,'receivedAt');
+ await db.activityTotal.updateMany({data:{playSeconds:{increment:900}}});
+ assert.equal((await own(a)).totals.playSeconds,960);stats=(await browser(request(http).get(`/v1/me/stats?from=${today}&to=${today}`),a.portal).expect(200)).body;assert.equal(stats.totals.playSeconds,60);
+ await browser(request(http).get('/v1/me/stats?from=2026-02-30&to=2026-03-01'),a.portal).expect(400);
+ await browser(request(http).get('/v1/me/stats?from=2026-01-01'),a.portal).expect(400);
+ await browser(request(http).get('/v1/me/stats?from=2020-01-01&to=2026-01-01'),a.portal).expect(400);
+ assert.equal(koreaDate(new Date('2026-10-01T15:00:00Z')),'2026-10-02');assert.equal(koreaDate(new Date('2026-10-01T14:59:59Z')),'2026-10-01');
+});
+test('reset clears matching daily buckets and preserves other server daily data',async()=>{
+ const a=await linked({allowedServerIds:['lobby','survival']});await submit(batch(a.minecraft));await submit(batch(a.minecraft,{serverId:'survival'}));
+ const scope={scope:'server',serverId:'lobby'};await reset(scope,(await preview(scope)).body);
+ assert.equal(await db.activityDaily.count(),1);assert.equal((await db.activityDaily.findFirst()).serverId,'survival');
+ const all={scope:'all'};await reset(all,(await preview(all)).body);assert.equal(await db.activityDaily.count(),0);
+});
+test('period Excel export uses filtered daily values and unavailable student IDs stay blank',async()=>{
+ const a=await linked();await submit(batch(a.minecraft));await db.activityTotal.updateMany({data:{playSeconds:999n}});
+ const today=koreaDate(new Date()),result=await exportFile({subjectId:a.owner.id,from:today,to:today});
+ const sheet=strFromU8(unzipSync(result.body)['xl/worksheets/sheet1.xml']);assert.ok(sheet.includes('<v>60</v>'));assert.ok(!sheet.includes('<v>999</v>'));assert.ok(sheet.includes('r="B2" s="0" t="inlineStr"><is><t xml:space="preserve"></t>'));
+});
+test('upgrade migration preserves cumulative data and atomically retires only personal collection preferences',async()=>{
+ const schema='stats_migration_'+randomUUID().replaceAll('-','');
+ const off=randomUUID(),on=randomUUID(),offUuid=randomUUID(),onUuid=randomUUID(),oldOffEpoch=randomUUID(),oldOnEpoch=randomUUID();
+ const sql=require('node:fs').readFileSync('prisma/migrations/20261002020000_statistics_export_manual/migration.sql','utf8').replace(/^--.*$/gm,'');
+ await db.$transaction(async tx=>{
+  await tx.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);await tx.$executeRawUnsafe(`SET LOCAL search_path TO "${schema}"`);
+  await tx.$executeRawUnsafe('CREATE TABLE "Subject" ("id" UUID PRIMARY KEY, "statisticsEnabled" BOOLEAN, "statisticsRevision" INTEGER)');
+  await tx.$executeRawUnsafe('CREATE TABLE "MinecraftIdentity" ("uuid" UUID PRIMARY KEY, "subjectId" UUID, "telemetryEpoch" UUID, "policyVersion" INTEGER, "policyFingerprint" TEXT, "updatedAt" TIMESTAMP(3))');
+  await tx.$executeRawUnsafe('CREATE TABLE "PolicyEvent" ("id" BIGSERIAL PRIMARY KEY, "minecraftUuid" UUID, "policyVersion" INTEGER, "createdAt" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP)');
+  await tx.$executeRawUnsafe('CREATE TABLE "ActivityGeneration" ("epoch" UUID PRIMARY KEY)');
+  await tx.$executeRawUnsafe('CREATE TABLE "ActivityTotal" ("epoch" UUID, "serverId" TEXT, "playSeconds" BIGINT, PRIMARY KEY ("epoch","serverId"))');
+  await tx.$executeRawUnsafe('INSERT INTO "Subject" VALUES ($1::uuid,false,1),($2::uuid,true,1)',off,on);
+  await tx.$executeRawUnsafe('INSERT INTO "MinecraftIdentity" VALUES ($1::uuid,$2::uuid,$3::uuid,1,\'old\',CURRENT_TIMESTAMP),($4::uuid,$5::uuid,$6::uuid,1,\'old\',CURRENT_TIMESTAMP)',offUuid,off,oldOffEpoch,onUuid,on,oldOnEpoch);
+  await tx.$executeRawUnsafe('INSERT INTO "ActivityGeneration" VALUES ($1::uuid)',oldOffEpoch);
+  await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES ($1::uuid,\'lobby\',321)',oldOffEpoch);
+  for(const statement of sql.split(';').map(s=>s.trim()).filter(s=>s&&!['BEGIN','COMMIT'].includes(s))) await tx.$executeRawUnsafe(statement);
+  const subjects=await tx.$queryRawUnsafe('SELECT * FROM "Subject"');assert.ok(subjects.every(s=>s.statisticsEnabled));assert.equal(subjects.find(s=>s.id===off).statisticsRevision,2);assert.equal(subjects.find(s=>s.id===on).statisticsRevision,1);
+  const identities=await tx.$queryRawUnsafe('SELECT * FROM "MinecraftIdentity"');assert.notEqual(identities.find(s=>s.uuid===offUuid).telemetryEpoch,oldOffEpoch);assert.equal(identities.find(s=>s.uuid===onUuid).telemetryEpoch,oldOnEpoch);
+  const events=await tx.$queryRawUnsafe('SELECT * FROM "PolicyEvent"');assert.equal(events.length,1);assert.equal(events[0].minecraftUuid,offUuid);assert.equal(events[0].policyVersion,2);
+  const totals=await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"');assert.equal(totals[0].playSeconds,321n);assert.equal(totals[0].firstCollectedAt,null);assert.equal(totals[0].lastCollectedAt,null);
+  assert.equal((await tx.$queryRawUnsafe('SELECT * FROM "ActivityDaily"')).length,0);assert.equal((await tx.$queryRawUnsafe('SELECT * FROM "StatisticsHistory"')).length,1);
+  await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+ },{timeout:30000});
 });

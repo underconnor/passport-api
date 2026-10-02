@@ -98,4 +98,7 @@ Discord 역할·닉네임 v2와 관리자 설정·수동 재조정, 현재 동�
 
 ## 통계 수집 제어·초기화
 
-[게임 통계 문서](account-game-activity.md)의 수집 설정, 관리자 전용 초기화 미리보기/실행, 정책 `telemetry.presenceEnabled/serverIds` 계약을 따른다. 본인 수집 OFF는 기존 기록을 보존하며, 서버 수집 OFF는 기존 기록을 보존하되 기본 집계에서 제외한다. 운영 로비 `ssu_lobby`는 migration/최초 등록 시 기본 OFF다. 사용자 본인 초기화 API는 제공하지 않는다.
+[게임 통계 문서](account-game-activity.md)의 수집 설정, 관리자 전용 초기화 미리보기/실행, 정책 `telemetry.presenceEnabled/serverIds` 계약을 따른다. 개인 수집 ON/OFF API는 제거되었다. 서버 수집 OFF는 기존 기록을 보존하되 통계 목록·기본 집계·기간 조회·엑셀에서 제외한다. 운영 로비 `ssu_lobby`는 migration/최초 등록 시 기본 OFF다. 사용자 본인 초기화 API는 제공하지 않는다.
+
+
+통계 GET은 `from/to` 한국 날짜를 받아 배포 이후 수집일 기준 기간 집계를 제공한다. 기존 누적 기록에 날짜를 추정해 넣지 않는다. `POST /v1/admin/stats/export`는 owner/operator의 관리자 세션·CSRF를 확인한 후 사용자 ID, 전체 학번, 이름, 게임·Discord ID와 서버별 8개 통계를 XLSX로 내려준다. 기간/서버/사용자 필터를 지원하며 모든 식별자는 문자열로 보관한다. 개인 통계 초기화는 제공하지 않는다.

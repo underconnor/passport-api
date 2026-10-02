@@ -1,3 +1,4 @@
+import { hasServiceCredential } from './service-credentials';
 import { gameAdministrator } from './admin-permissions';
 import { randomUUID } from 'node:crypto';
 import { purgeRevokedDeletedAccounts } from './members';
@@ -63,6 +64,8 @@ export class PassportService {
     if (!origin || !this.config.origins.includes(origin) || new URL(origin).host !== host) throw new ForbiddenException({ code: 'invalid_origin' });
   }
   service(req: Request) {
+    if (hasServiceCredential(req, 'minecraft')) return;
+    if (!this.config.legacyServiceAuthEnabled) throw new UnauthorizedException({ code: 'service_unauthorized' });
     const value = req.headers.authorization;
     if (!value?.startsWith('Bearer ') || !equal(value.slice(7), this.config.serviceToken)) throw new UnauthorizedException({ code: 'service_unauthorized' });
   }
@@ -273,7 +276,7 @@ export class PassportService {
       const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: consent && subject && status === 'active' ? gameName(subject.displayName).slice(0, 40) : '', member: consent && status === 'active' && memberStatus === 'active', admissionYear: consent && status === 'active' ? subject?.admissionYear ?? null : null };
       const administrator = Boolean(subject && schoolActive(subject, now) && gameAdministrator(subject.administrator));
       const presenceEnabled = consent && status === 'active';
-      const telemetryEnabled = presenceEnabled && Boolean(subject?.statisticsEnabled);
+      const telemetryEnabled = presenceEnabled;
       const telemetry = { enabled: telemetryEnabled, epoch: telemetryEnabled ? identity.telemetryEpoch : null, presenceEnabled, serverIds: telemetryEnabled ? allowedServers.filter(server => server.statisticsEnabled).map(server => server.id) : [] };
       const serverChoices = allowedServers.map(({ id, label }) => ({ id, label }));
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
