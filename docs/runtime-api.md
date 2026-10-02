@@ -11,7 +11,7 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | POST /v1/auth/development | `{identity:"member"\|"outsider"}`. 개발 모드만 허용. 세션 회전 후 /me 응답 |
 | POST /v1/auth/logout | 인증 세션 회수, 204 |
 | GET /v1/me | `{id,displayName,identityProvider,membership:{status,effectiveStatus,roleLabel,verifiedUntil},minecraft:{uuid,name}\|null,discordReference:{id,verificationStatus:"self_reported",updatedAt}\|null,csrfToken}` |
-| GET /v1/me/servers | `{servers:[{id,label,sensitive}]}`. 실제 허용 서버만 반환, 거절 대상 ID·이름 비노출 |
+| GET /v1/me/servers | `{servers:[{id,label,commandName,sensitive}]}`. 실제 허용 서버만 반환, 거절 대상 ID·이름 비노출 |
 | GET /v1/me/minecraft-skin | 자신의 연결된 스킨 `{dataUrl,model}`. 상류 장애나 미연결은 null |
 | PUT /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
 | DELETE /v1/me/discord-id | 세션/CSRF 확인 후403 `discord_admin_contact_required` |
@@ -47,7 +47,7 @@ API는 기본적으로 JSON을 반환합니다. 오류는 `{ "code": "machine_re
 | POST /v1/link-sessions/:id/game-confirm | `{minecraftUuid,gameSessionId}` → `{id,status:"pending"\|"linked",expiresAt}` |
 | DELETE /v1/link-sessions/:id | 동일 게임 identity body → 204. 취소는 같은 접속 세션에만 허용 |
 | GET /v1/minecraft/policies/:uuid | 계약 `0.1.0-draft`의 최소 정책 |
-| GET /v1/minecraft/servers | 활성 서버의 `{servers:[{id,label,sensitive}]}` |
+| GET /v1/minecraft/servers | 활성 서버의 `{servers:[{id,label,commandName,sensitive}]}` |
 | POST /v1/minecraft/servers/heartbeat | `{source:"velocity"\|"paper",servers:[{id,label}]}` → `{received,registered}`. 새 서버는 비활성 발견 |
 | GET /v1/minecraft/events?after= | `{cursor,reset,events:[{id,minecraftUuid,policyVersion}]}`. cursor와 id는 64비트 decimal 문자열, 최대 500개 |
 | GET /healthz | DB 연결 확인. `{status:"ok",authMode}` |
@@ -86,7 +86,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 이벤트는 정책 변경 알림이며 허가 증거가 아닙니다. `reset=true`이면 접속자를 다시 조회하고, 보존한 UUID 버전보다 낮은 정책은 거절합니다. DB 복원으로 버전이 내려가면 운영자가 버전을 복구해야 합니다.
 
-DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `accessMode`는 `roster|members|selected|university`입니다. university만 비회원의 유효한 학교 인증을 허용하며 모든 모드에서 전체 정지·개인 서버 제한은 유지합니다. 기존 서버는 설정을 바꾸지 않고 새 발견도 비활성 roster로 남습니다. `admin/overview.servers`는 관리자에게 비활성 서버도 이름을 확인할 수 있도록 `{id,label,sensitive,enabled}` 전체 목록을 제공합니다.
+DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `accessMode`는 `roster|members|selected|university`입니다. university만 비회원의 유효한 학교 인증을 허용하며 모든 모드에서 전체 정지·개인 서버 제한은 유지합니다. 기존 서버는 설정을 바꾸지 않고 새 발견도 비활성 roster로 남습니다. `admin/overview.servers`는 관리자에게 비활성 서버도 이름을 확인할 수 있도록 `{id,label,commandName,sensitive,enabled}` 전체 목록을 제공합니다.
 
 이벤트를 생성할 수 있는 정책 트랜잭션은 `policyTransaction`을 사용합니다. 트랜잭션의 첫 SQL에서 공통 PostgreSQL advisory transaction lock을 획득해 ID 발급과 커밋 순서가 어긋나지 않도록 합니다. 웹·게임 연결 완료, 정책 조회 중 변경 감지, 관리자 접근 제한·연결 해제, 명부 반영, 학교 로그인 완료에 적용합니다. 학교 재로그인 시 기존 Minecraft 연결이 있으면 갱신된 학교 유효기간·이름·명부 정보를 소비자가 다시 읽도록 정책 버전과 이벤트를 함께 갱신합니다. 미연결 첫 로그인은 이벤트를 만들지 않습니다. 일반 인증 준비·MFA·읽기 트랜잭션에는 적용하지 않습니다. 잠금은 커밋·롤백 시 자동 해제됩니다. 앞으로 이벤트 생산 경로를 추가할 때도 같은 wrapper를 사용해야 합니다.
 
@@ -106,3 +106,7 @@ Discord 역할·닉네임 v2와 관리자 설정·수동 재조정, 현재 동�
 관리자 전체 통계 `GET /v1/admin/stats`와 XLSX `POST /v1/admin/stats/export`만 `membership=all|active`를 받으며 생략 시 `all`이다. `active`는 조회 시점에 `identityProvider=usaint`, `membershipStatus=active`, `verifiedUntil>queryNow`, `accessSuspended=false`인 현재 소모임 회원이다. 과거 기간을 조회해도 현재 회원 기준으로 선별하며, 당시 회원 신분을 추정하지 않는다. 8개 지표·서버별 합계·playerCount·daily·최초/최근 수집 시각과 현재 접속 인원에 같은 회원 조건을 사용한다. 기존 presence는 수집 설정과 별개이므로 현재 접속 인원의 서버 범위는 유지한다. 수집이 꺼진 서버의 통계 지표·목록·XLSX는 기존처럼 제외하고 전역 `period.availableFrom`은 변경하지 않는다.
 
 개인 `/v1/me/stats`와 `/v1/admin/members/:id/stats`는 membership 필드를 400으로 거절하며 범위를 변경하지 않는다. Minecraft 개인 통계는 기존대로 query를 무시하며 이 필터를 적용하지 않는다. reset API에도 membership을 추가하지 않는다. XLSX는 현재 회원 범위와 기존 기간/서버/사용자 필터의 교집합을 사용한다. 존재하는 비회원 subjectId와 active 조합은 헤더만 있는 빈 XLSX를 반환하고, 존재하지 않는 subjectId는 기존 404이다. 내보내기 정보에 조회 대상·현재 회원 판정 기준·판정 시각(UTC)을 기록하고 감사에도 기본값을 포함한 membership을 남긴다.
+
+### 서버 이동 명령 이름
+
+관리자 서버 설정의 선택적 `commandName`은 immutable id와 독립된 명령 목적지 이름이다. `PUT /v1/admin/servers/:id`에서 생략하면 기존 이름을 유지한다. NFC·소문자 정규화 후 `^[a-z0-9가-힣_-]{1,64}$`를 만족해야 하며 공백은 trim하지 않는다. 다른 서버의 commandName 또는 id와 충돌하면409 `server_command_conflict`다. label은 별도 표시명으로 독립 편집한다. 모든 서버 DTO와 정책 `allowedServers`에 commandName을 포함하며 접근 권한·통계는 기존 id로 유지한다. 상세 호환·migration 규칙은 [서버 등록 문서](server-registry.md)를 따른다.

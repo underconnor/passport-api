@@ -179,6 +179,7 @@ model RosterMembership {
 }
 model ServerRecord {
   id String @id
+  commandName String @unique
   label String
   sensitive Boolean @default(false)
   enabled Boolean @default(false)

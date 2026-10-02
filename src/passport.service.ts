@@ -143,7 +143,7 @@ export class PassportService {
     const c = await this.context(req, true);
     const s = c.session.subject!;
     const records = await this.db.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    return { servers: this.gameServers(s, records).map(({ id, label, sensitive }) => ({ id, label, sensitive })) };
+    return { servers: this.gameServers(s, records).map(({ id, commandName, label, sensitive }) => ({ id, commandName, label, sensitive })) };
   }
   gameServers(subject: ScopeSubject, records: ServerRecord[], now = new Date(), applyPersonalLimit = true) {
     return permittedServers(subject, records, { now, applyPersonalLimit, allowDevelopment: !this.config.production && this.config.authMode === 'development' });
@@ -278,7 +278,7 @@ export class PassportService {
       const presenceEnabled = consent && status === 'active';
       const telemetryEnabled = presenceEnabled;
       const telemetry = { enabled: telemetryEnabled, epoch: telemetryEnabled ? identity.telemetryEpoch : null, presenceEnabled, serverIds: telemetryEnabled ? allowedServers.filter(server => server.statisticsEnabled).map(server => server.id) : [] };
-      const serverChoices = allowedServers.map(({ id, label }) => ({ id, label }));
+      const serverChoices = allowedServers.map(({ id, commandName, label }) => ({ id, commandName, label }));
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
       let policyVersion = identity.policyVersion;
       if (identity.policyFingerprint !== fingerprint) {

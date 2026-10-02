@@ -101,7 +101,7 @@ export async function adminOverview(p: PassportService, req: Request) {
   const [subjects, linked, suspended, snapshot] = await Promise.all([
     p.db.subject.count({ where: { identityProvider: 'usaint' } }), p.db.minecraftIdentity.count({ where: { subjectId: { not: null } } }), p.db.subject.count({ where: { accessSuspended: true } }), p.db.rosterSnapshot.findUnique({ where: { id: 'current' }, select: { entryCount: true, fetchedAt: true, expiresAt: true } })
   ]);
-  const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' }, select: { id: true, label: true, sensitive: true, enabled: true } });
+  const servers = await p.db.serverRecord.findMany({ orderBy: { id: 'asc' }, select: { id: true, commandName: true, label: true, sensitive: true, enabled: true } });
   return { subjects, linked, suspended, snapshot, sync: p.membership.status(), servers };
 }
 export async function setMemberAccess(p: PassportService, req: Request, id: string, input: { suspended: boolean; restricted: boolean; serverIds: string[] }) {

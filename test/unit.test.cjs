@@ -72,3 +72,13 @@ test('administrator roles fail closed and viewer never inherits mutating game ca
  assert.deepEqual(adminPermissions({enabled:true,role:'viewer',revokedAt:null}),{read:true,write:false,manageOperators:false});assert.equal(gameAdministrator({enabled:true,role:'viewer',revokedAt:null}),false);
  assert.deepEqual(adminPermissions({enabled:true,role:'operator',revokedAt:null}),{read:true,write:true,manageOperators:false});assert.equal(gameAdministrator({enabled:true,role:'owner',revokedAt:null}),true);
 });
+
+const {serverCommandNameSchema,serverSettingsSchema}=require('../dist/security');
+test('server command names normalize NFC and ASCII case without trimming or changing display labels',()=>{
+ for(const [input,expected] of [['Lobby','lobby'],['PLAY_2-야생','play_2-야생'],['로비','로비'],['가'.repeat(64),'가'.repeat(64)],['1','1']])assert.equal(serverCommandNameSchema.parse(input),expected);
+ for(const input of ['',null,1,'가'.repeat(65),'a'.repeat(65),' lobby','lobby ','two words','/lobby','lobby/creative','a\nb','a\tb','a:b','a.b','ㄱ','ᄀ','Ａ','😀'])assert.equal(serverCommandNameSchema.safeParse(input).success,false,JSON.stringify(input));
+ const original={label:'로비 표시 이름',sensitive:false,enabled:true,accessMode:'roster',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-02T00:00:00.000Z'};
+ assert.equal(serverSettingsSchema.parse(original).commandName,undefined);
+ const parsed=serverSettingsSchema.parse({...original,commandName:'CAMPUS-로비'});assert.equal(parsed.commandName,'campus-로비');assert.equal(parsed.label,original.label);
+ assert.equal(serverSettingsSchema.safeParse({...original,id:'cannot-change'}).success,false);
+});

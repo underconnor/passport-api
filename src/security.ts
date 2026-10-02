@@ -34,9 +34,10 @@ export const mfaSchema = z.object({ code: z.string().regex(/^\d{6}$/) }).strict(
 export const accessSchema = z.object({ suspended: z.boolean(), restricted: z.boolean(), serverIds: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(64) }).strict();
 export const rosterSyncSchema = z.object({ expectedApprovalDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
 export const serverIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+export const serverCommandNameSchema = z.string().transform(value => value.normalize('NFC').toLowerCase()).pipe(z.string().min(1).max(64).regex(/^[a-z0-9가-힣_-]+$/));
 const serverLabelSchema = z.string().trim().min(1).max(80).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 export const serverHeartbeatSchema = z.object({ source: z.enum(['velocity', 'paper']), servers: z.array(z.object({ id: serverIdSchema, label: serverLabelSchema }).strict()).max(64).refine(servers => new Set(servers.map(server => server.id)).size === servers.length) }).strict();
-export const serverSettingsSchema = z.object({ statisticsEnabled: z.boolean().optional(), label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
+export const serverSettingsSchema = z.object({ commandName: serverCommandNameSchema.optional(), statisticsEnabled: z.boolean().optional(), label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new BadRequestException({ code: 'invalid_request', message: 'Request has invalid fields' });

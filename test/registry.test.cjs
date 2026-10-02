@@ -116,7 +116,7 @@ test('university is opt-in: nonmembers see only allowed servers and can link wit
  assert.deepEqual(await visibleServers(portal),[]);assert.equal((await webLink(link,portal).expect(403)).body.code,'membership_required');
  await publicServer();
  assert.deepEqual(await db.serverRecord.findMany({where:{id:{in:original.map(row=>row.id)}},orderBy:{id:'asc'}}),original);
- assert.deepEqual(await visibleServers(portal),[{id:'campus',label:'학교 인증 공개 서버',sensitive:false}]);
+ assert.deepEqual(await visibleServers(portal),[{id:'campus',commandName:'campus',label:'학교 인증 공개 서버',sensitive:false}]);
  await webLink(link,portal).expect(200);await confirmGame(link).expect(200);
  const result=await policy({uuid:link.minecraftUuid});assert.equal(result.status,'active');assert.deepEqual(result.allowedServerIds,['campus']);assert.equal(result.display.roleLabel,'');assert.ok(Date.parse(result.expiresAt)-Date.parse(result.issuedAt)>59000);
  const profile=(await browser(request(http).get('/v1/me'),portal).expect(200)).body;assert.equal(profile.membership.status,'inactive');assert.equal(profile.membership.effectiveStatus,'revoked');
@@ -195,6 +195,96 @@ test('profile membership freshness is independent from school freshness while al
 
 test('additive university migration keeps an allowlisted database constraint',async()=>{
  await publicServer();assert.equal((await db.serverRecord.findUnique({where:{id:'campus'}})).accessMode,'university');
- await assert.rejects(db.serverRecord.create({data:{id:'unsupported',label:'Unsupported',enabled:true,accessMode:'everyone'}}),/ServerRecord_accessMode_check/);
+ await assert.rejects(db.serverRecord.create({data:{id:'unsupported',commandName:'unsupported',label:'Unsupported',enabled:true,accessMode:'everyone'}}),/ServerRecord_accessMode_check/);
  assert.equal(await db.serverRecord.count({where:{id:'unsupported'}}),0);
+});
+
+test('server display labels and normalized command names stay independent across policy, portal and registry DTOs',async()=>{
+ const member=await subject(),portal=await session(member,PORTAL),identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'NamedServer',subjectId:member.id}});
+ await db.activityGeneration.create({data:{epoch:identity.telemetryEpoch,subjectId:member.id,minecraftUuid:identity.uuid}});
+ await db.activityTotal.create({data:{epoch:identity.telemetryEpoch,serverId:'lobby',playSeconds:321n}});
+ const memberBefore=await db.subject.findUnique({where:{id:member.id}}),initial=await policy(identity);
+ assert.equal(initial.allowedServers.find(server=>server.id==='lobby').commandName,'lobby');
+ const updated=(await settings('lobby',{label:'대학생 로비',commandName:'CAMPUS-로비'})).body.server;
+ assert.equal(updated.id,'lobby');assert.equal(updated.label,'대학생 로비');assert.equal(updated.commandName,'campus-로비');
+ const changed=await policy(identity);assert.deepEqual(changed.allowedServerIds,initial.allowedServerIds);assert.equal(changed.policyVersion,initial.policyVersion+1);
+ assert.deepEqual(changed.allowedServers.find(server=>server.id==='lobby'),{id:'lobby',label:'대학생 로비',commandName:'campus-로비'});
+ for(const response of [(await visibleServers(portal)),(await browser(request(http).get('/v1/admin/servers')).expect(200)).body.servers,(await service(request(http).get('/v1/minecraft/servers')).expect(200)).body.servers,(await browser(request(http).get('/v1/admin/overview')).expect(200)).body.servers]){
+  assert.equal(response.find(server=>server.id==='lobby').commandName,'campus-로비');assert.equal(response.find(server=>server.id==='lobby').label,'대학생 로비');
+ }
+ await settings('lobby',{label:'표시 이름만 수정'});const preserved=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(preserved.commandName,'campus-로비');
+ await settings('lobby',{commandName:'안내'});const renamed=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(renamed.label,'표시 이름만 수정');assert.equal(renamed.commandName,'안내');
+ await heartbeat('paper',[{id:'lobby',label:'do not overwrite'}]);await heartbeat('velocity',[{id:'lobby',label:'ignored'}]);
+ await seedServerRegistry(db,[{id:'lobby',label:'seed ignored'}]);const after=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(after.label,renamed.label);assert.equal(after.commandName,renamed.commandName);assert.equal(after.updatedAt.getTime(),renamed.updatedAt.getTime());
+ assert.deepEqual(await db.subject.findUnique({where:{id:member.id}}),memberBefore);assert.equal((await db.activityTotal.findUnique({where:{epoch_serverId:{epoch:identity.telemetryEpoch,serverId:'lobby'}}})).playSeconds,321n);
+ assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}})).telemetryEpoch,identity.telemetryEpoch);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.server_updated'},orderBy:{createdAt:'asc'}});assert.equal(audit.details.before.commandName,'lobby');assert.equal(audit.details.after.commandName,'campus-로비');
+});
+
+test('server commands reject normalized duplicates and every other immutable ID without partial changes',async()=>{
+ await settings('survival',{commandName:'WILD'});
+ const before=await db.serverRecord.findUnique({where:{id:'lobby'}}),events=await db.policyEvent.count(),audits=await db.auditEvent.count();
+ for(const commandName of ['wild','WILD','survival'])assert.equal((await settings('lobby',{label:'must roll back',commandName},409)).body.code,'server_command_conflict');
+ assert.deepEqual(await db.serverRecord.findUnique({where:{id:'lobby'}}),before);assert.equal(await db.policyEvent.count(),events);assert.equal(await db.auditEvent.count(),audits);
+ await settings('survival',{commandName:'야생'});assert.equal((await settings('lobby',{commandName:'야생'},409)).body.code,'server_command_conflict');
+ assert.equal((await settings('lobby',{commandName:'LOBBY'})).body.server.commandName,'lobby');
+});
+
+test('concurrent server command claims serialize to one winner and heartbeat collisions roll back all discovery',async()=>{
+ const records=await db.serverRecord.findMany({where:{id:{in:['lobby','survival']}}});
+ const results=await Promise.all(records.map(current=>browser(request(http).put(`/v1/admin/servers/${current.id}`),admin,true).send({label:current.label,sensitive:current.sensitive,enabled:current.enabled,accessMode:current.accessMode,allowedSubjectIds:current.allowedSubjectIds,expectedUpdatedAt:current.updatedAt.toISOString(),commandName:'공용'})));
+ assert.deepEqual(results.map(result=>result.status).sort(),[200,409]);assert.equal(results.find(result=>result.status===409).body.code,'server_command_conflict');
+ assert.equal(await db.serverRecord.count({where:{commandName:'공용'}}),1);
+ await settings('lobby',{commandName:'future'});
+ const old=await db.serverRecord.findUnique({where:{id:'lobby'}}),count=await db.serverRecord.count();
+ assert.equal((await heartbeat('paper',[{id:'lobby',label:'ignored'},{id:'new_server',label:'new'},{id:'future',label:'collision'}],409)).body.code,'server_command_conflict');
+ assert.equal(await db.serverRecord.count(),count);assert.equal(await db.serverRecord.count({where:{id:'new_server'}}),0);assert.deepEqual((await db.serverRecord.findUnique({where:{id:'lobby'}})).paperSeenAt,old.paperSeenAt);
+ await heartbeat('paper',[{id:'fresh_server',label:'새 서버'}]);assert.equal((await db.serverRecord.findUnique({where:{id:'fresh_server'}})).commandName,'fresh_server');
+});
+
+test('command edits retain host, role, CSRF, unknown-field and optimistic-concurrency validation',async()=>{
+ const before=await db.serverRecord.findUnique({where:{id:'lobby'}});
+ for(const commandName of ['',null,'two words','/lobby','a'.repeat(65),'ㄱ','😀'])await settings('lobby',{commandName},400);
+ const viewer=await subject();await db.administrator.create({data:{subjectId:viewer.id,enabled:true,role:'viewer',totpSecret:''}});await settings('lobby',{commandName:'안내'},403,await session(viewer));
+ await settings('lobby',{commandName:'안내'},403,await session(admin.subject,PORTAL));
+ const body={label:before.label,sensitive:before.sensitive,enabled:before.enabled,accessMode:before.accessMode,allowedSubjectIds:before.allowedSubjectIds,expectedUpdatedAt:before.updatedAt.toISOString(),commandName:'안내'};
+ await browser(request(http).put('/v1/admin/servers/lobby')).send(body).expect(403);
+ await browser(request(http).put('/v1/admin/servers/lobby'),admin,true).send({...body,id:'other'}).expect(400);
+ await browser(request(http).put('/v1/admin/servers/lobby'),admin,true).send(body).expect(200);
+ assert.equal((await browser(request(http).put('/v1/admin/servers/lobby'),admin,true).send({...body,commandName:'stale'}).expect(409)).body.code,'server_changed');
+ assert.equal((await db.serverRecord.findUnique({where:{id:'lobby'}})).commandName,'안내');
+});
+
+test('commandName participates in policy fingerprints even when a persisted configuration update bypasses the API',async()=>{
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'PolicyNames',subjectId:admin.subject.id}}),before=await policy(identity);
+ await db.serverRecord.update({where:{id:'lobby'},data:{commandName:'안내'}});
+ const after=await policy(identity);assert.equal(after.policyVersion,before.policyVersion+1);assert.deepEqual(after.allowedServerIds,before.allowedServerIds);assert.equal(after.allowedServers.find(server=>server.id==='lobby').commandName,'안내');
+});
+
+test('command-name migration backfills IDs atomically without changing labels, revisions, permission arrays or historical server keys',async()=>{
+ const schema='command_migration_'+randomUUID().replaceAll('-','');
+ const sql=require('node:fs').readFileSync('prisma/migrations/20261002030000_server_command_name/migration.sql','utf8').replace(/^--.*$/gm,'');
+ await db.$transaction(async tx=>{
+  await tx.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);await tx.$executeRawUnsafe(`SET LOCAL search_path TO "${schema}"`);
+  await tx.$executeRawUnsafe('CREATE TABLE "ServerRecord" ("id" TEXT PRIMARY KEY,"label" TEXT NOT NULL,"allowedSubjectIds" UUID[] NOT NULL DEFAULT ARRAY[]::UUID[],"updatedAt" TIMESTAMP(3) NOT NULL)');
+  await tx.$executeRawUnsafe('CREATE TABLE "ActivityTotal" ("serverId" TEXT NOT NULL,"playSeconds" BIGINT NOT NULL)');
+  await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" VALUES (\'lobby\',\'로비 표시\',ARRAY[]::UUID[],\'2026-01-01\'),(\'survival\',\'생존 표시\',ARRAY[]::UUID[],\'2026-01-02\')');
+  await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES (\'lobby\',321)');
+  const before=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');
+  // Keep PL/pgSQL's dollar-quoted trigger body intact when executing this migration in the isolated schema.
+  let dollarQuoted=false,statement='';const statements=[];
+  for(const token of sql.split(/(\$\$|;)/)){if(token==='$$')dollarQuoted=!dollarQuoted;if(token===';'&&!dollarQuoted){statements.push(statement.trim());statement='';}else statement+=token;}
+  if(statement.trim())statements.push(statement.trim());
+  for(const statement of statements.filter(value=>value&&!['BEGIN','COMMIT'].includes(value)))await tx.$executeRawUnsafe(statement);
+  const rows=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');assert.deepEqual(rows.map(({commandName,...row})=>row),before);assert.deepEqual(rows.map(row=>row.commandName),['lobby','survival']);
+  assert.equal((await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"'))[0].playSeconds,321n);
+  await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","label","updatedAt") VALUES (\'legacy_insert\',\'Old API insert\',CURRENT_TIMESTAMP)');
+  const legacy=(await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" WHERE "id"=\'legacy_insert\''))[0];assert.equal(legacy.commandName,'legacy_insert');assert.equal(legacy.label,'Old API insert');
+  const column=(await tx.$queryRawUnsafe('SELECT "is_nullable" FROM information_schema.columns WHERE table_schema=$1 AND table_name=\'ServerRecord\' AND column_name=\'commandName\'',schema))[0];assert.equal(column.is_nullable,'NO');
+  await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+ },{timeout:30000});
+ await assert.rejects(db.serverRecord.create({data:{id:'duplicated_command',commandName:'lobby',label:'Synthetic'}}),error=>error.code==='P2002');
+ await assert.rejects(db.serverRecord.create({data:{id:'invalid_command',commandName:'UPPER CASE',label:'Synthetic'}}),/ServerRecord_commandName_check/);
+ await assert.rejects(db.$executeRawUnsafe('UPDATE "ServerRecord" SET "commandName"=NULL WHERE "id"=\'lobby\''),error=>error.code==='P2010'&&error.meta?.code==='23502');
+ assert.equal((await db.serverRecord.findUnique({where:{id:'lobby'}})).commandName,'lobby');
 });

@@ -76,7 +76,7 @@ class PassportController {
   @Post('v1/link-sessions/:id/game-confirm') @HttpCode(200) gameConfirm(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.gameConfirm(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Delete('v1/link-sessions/:id') @HttpCode(204) cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return this.passport.cancelLink(req, parse(uuidSchema, id), parse(gameIdentitySchema, body)); }
   @Get('v1/minecraft/policies/:uuid') policy(@Req() req: Request, @Param('uuid') uuid: string) { return observedOperation('policy', () => this.passport.policy(req, parse(uuidSchema, uuid))); }
-  @Get('v1/minecraft/servers') async registry(@Req() req: Request) { this.passport.service(req); return { servers: await this.passport.db.serverRecord.findMany({ where: { enabled: true }, orderBy: { id: 'asc' }, select: { id: true, label: true, sensitive: true } }) }; }
+  @Get('v1/minecraft/servers') async registry(@Req() req: Request) { this.passport.service(req); return { servers: await this.passport.db.serverRecord.findMany({ where: { enabled: true }, orderBy: { id: 'asc' }, select: { id: true, commandName: true, label: true, sensitive: true } }) }; }
   @Post('v1/minecraft/servers/heartbeat') @HttpCode(200) heartbeat(@Req() req: Request, @Body() body: unknown) { return heartbeatServers(this.passport, req, parse(serverHeartbeatSchema, body)); }
   @Get('v1/minecraft/events') events(@Req() req: Request, @Query('after') after?: string) { return observedOperation('events', () => this.passport.policyEvents(req, after)); }
   @Get('v1/admin/session') adminSession(@Req() req: Request) { return adminStatus(this.passport, req); }

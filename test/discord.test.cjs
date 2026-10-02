@@ -61,7 +61,7 @@ test('Discord linking requires explicit current consent and valid non-suspended 
  assert.equal(await db.discordIdentity.count(),0);assert.equal(await db.consentReceipt.count(),0);
 });
 test('nonmembers may verify school identity without acquiring a membership role',async()=>{
- await db.serverRecord.create({data:{id:'campus_discord_test',label:'Synthetic university server',enabled:true,accessMode:'university'}});
+ await db.serverRecord.create({data:{id:'campus_discord_test',commandName:'campus_discord_test',label:'Synthetic university server',enabled:true,accessMode:'university'}});
  try {
   await db.subject.update({where:{id:member.subjectId},data:{membershipStatus:'inactive',verifiedUntil:new Date(0)}});
   const allowed=(await browser(request(http).get('/v1/me/servers'),member,false).expect(200)).body.servers;
