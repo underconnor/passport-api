@@ -51,7 +51,7 @@ export async function reportPresence(p: PassportService, req: Request, input: { 
   return policyTransaction(p.db, async tx => {
     const server = await tx.serverRecord.findUnique({ where: { id: input.serverId } });
     if (!server?.enabled) throw new ForbiddenException({ code: 'server_not_enabled' });
-    const identities = await tx.minecraftIdentity.findMany({ where: { uuid: { in: input.players }, subjectId: { not: null } }, include: { subject: true } });
+    const identities = await tx.minecraftIdentity.findMany({ where: { uuid: { in: input.players }, subjectId: { not: null } }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
     const allowed = [];
     for (const identity of identities) if (identity.subject && p.gameServers(identity.subject, [server], now).length && await gameConsent(tx, identity.subject.id)) allowed.push(identity);
     await tx.playerPresence.deleteMany({ where: { serverId: input.serverId, observedAt: { lte: observedAt }, minecraftUuid: { notIn: allowed.map(identity => identity.uuid) } } });

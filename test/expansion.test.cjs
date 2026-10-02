@@ -227,3 +227,21 @@ test('new player-kill and movement counters aggregate without changing old Paper
  const oldEpoch=batch({...a.minecraft,telemetryEpoch:randomUUID()},{records:[{...extended.records[0],epoch:randomUUID()}]});assert.equal((await submit(oldEpoch)).body.ignored,1);
  assert.equal((await browser(request(http).get('/v1/admin/stats')).expect(200)).body.totals.playerKills,3);
 });
+
+test('member ID resolution is authorized, bounded and intersects search/filter while cursors bind the requested IDs',async()=>{
+ const a=await subject({displayName:'선택 가'}),b=await subject({displayName:'선택 나',membershipStatus:'inactive'}),c=await subject({displayName:'선택 다'}),development=await subject({identityProvider:'development'}),missing=randomUUID();
+ const query=ids=>browser(request(http).get('/v1/admin/members').query({ids}));
+ const response=(await query([a.id,b.id,development.id,missing].join(',')).expect(200)).body;assert.equal(response.total,2);assert.deepEqual(response.members.map(row=>row.id),[a.id,b.id]);
+ const filtered=await browser(request(http).get('/v1/admin/members').query({ids:[a.id,b.id].join(','),membership:'inactive',q:'선택'})).expect(200);assert.deepEqual(filtered.body.members.map(row=>row.id),[b.id]);
+ const noMatch=await browser(request(http).get('/v1/admin/members').query({ids:a.id,q:c.displayName})).expect(200);assert.equal(noMatch.body.total,0);
+ const ids=[a.id,b.id,c.id].join(','),page=(await browser(request(http).get('/v1/admin/members').query({ids,limit:1})).expect(200)).body;
+ assert.ok(page.nextCursor);const next=(await browser(request(http).get('/v1/admin/members').query({ids,limit:1,cursor:page.nextCursor})).expect(200)).body;assert.notEqual(next.members[0].id,page.members[0].id);
+ for(const change of [{ids:[a.id,b.id].join(',')},{ids:undefined}])await browser(request(http).get('/v1/admin/members').query({ids,limit:1,cursor:page.nextCursor,...change})).expect(400);
+ for(const value of ['',a.id+',',a.id+','+a.id.toUpperCase(),'invalid',Array.from({length:51},()=>randomUUID()).join(',')])await query(value).expect(400);
+ await browser(request(http).get('/v1/admin/members').query({ids:[a.id,b.id]})).expect(400);
+ await request(http).get('/v1/admin/members').set('Host','admin.example.test').query({ids:a.id}).expect(401);
+ const portal=await session(a);await browser(request(http).get('/v1/admin/members').query({ids:a.id}),portal).expect(403);
+ const viewer=await subject();await db.administrator.create({data:{subjectId:viewer.id,enabled:true,role:'viewer',totpSecret:''}});const viewSession=await session(viewer,'admin.example.test');
+ assert.equal((await browser(request(http).get('/v1/admin/members').query({ids:a.id}),viewSession).expect(200)).body.total,1);
+ assert.equal((await query(missing).expect(200)).body.total,0);
+});

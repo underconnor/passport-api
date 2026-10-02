@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { hasServiceCredential } from './service-credentials';
 import { ConflictException, ForbiddenException, GoneException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Prisma, type DiscordLinkSession } from '@prisma/client';
@@ -66,6 +67,14 @@ export async function inspectDiscordLink(p: PassportService, req: Request, id: s
   return { ...summary(link), discordId: link.discordUserId, username: link.username, displayName: link.displayName };
 }
 
+// Called under the shared policy lock in the same transaction as the relation change.
+async function refreshMinecraftDiscordScope(tx: Prisma.TransactionClient, subjectId: string) {
+  const identity = await tx.minecraftIdentity.findUnique({ where: { subjectId }, select: { uuid: true } });
+  if (!identity) return;
+  const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '', telemetryEpoch: randomUUID() } });
+  await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
+}
+
 async function confirmDiscordLinkInTransaction(p: PassportService, tx: Prisma.TransactionClient, id: string, token: string, subjectId: string, webSessionId: string, consent: { version: string; acceptedAt: Date }) {
   const link = discordLinkState(await tx.discordLinkSession.findUnique({ where: { id } }), token, true);
   configuredGuild(p, link.guildId);
@@ -82,6 +91,7 @@ async function confirmDiscordLinkInTransaction(p: PassportService, tx: Prisma.Tr
   const data = { eraseWhenRevoked: false, guildId: link.guildId, username: link.username, displayName: link.displayName, subjectId, verifiedAt: now };
   await tx.discordIdentity.upsert({ where: { discordUserId: link.discordUserId }, create: { discordUserId: link.discordUserId, ...data }, update: data });
   await projectDiscordIdentity(tx, link.discordUserId, now);
+  await refreshMinecraftDiscordScope(tx, subjectId);
   const completed = await tx.discordLinkSession.update({ where: { id }, data: { status: 'linked', subjectId, completedAt: now } });
   await tx.auditEvent.create({ data: { action: 'discord.linked', subjectId, objectId: link.id } });
   return summary(completed);
@@ -106,6 +116,7 @@ export async function unlinkDiscord(p: PassportService, req: Request, subjectId:
     if (identity) {
       await tx.discordIdentity.update({ where: { discordUserId: identity.discordUserId }, data: { subjectId: null } });
       await projectDiscordIdentity(tx, identity.discordUserId);
+      await refreshMinecraftDiscordScope(tx, subjectId);
       await tx.discordLinkSession.updateMany({ where: { discordUserId: identity.discordUserId, status: 'pending' }, data: { status: 'cancelled' } });
     }
     await tx.subject.update({ where: { id: subjectId }, data: { discordId: null, discordUpdatedAt: null } });

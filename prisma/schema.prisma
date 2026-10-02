@@ -184,6 +184,7 @@ model ServerRecord {
   sensitive Boolean @default(false)
   enabled Boolean @default(false)
   accessMode String @default("roster")
+  discordRequirement String @default("any")
   statisticsEnabled Boolean @default(true)
   allowedSubjectIds String[] @default([]) @db.Uuid
   paperSeenAt DateTime?

@@ -19,7 +19,7 @@ import { seedDiscordSettings } from './discord-management';
 import { verifiedStudentId } from './school-identity';
 import { migrateSchoolVerificationExpiry } from './school-expiry';
 
-type Context = { session: WebSession & { subject: Subject | null }; token: string };
+type Context = { session: WebSession & { subject: (Subject & Pick<ScopeSubject, 'discordIdentity'>) | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
 @Injectable()
 export class PassportService {
@@ -73,7 +73,7 @@ export class PassportService {
     const host = this.host(req);
     const token = parseCookie(req.headers.cookie ?? '')[this.cookieName(req)];
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new UnauthorizedException({ code: 'session_required' });
-    const session = await this.db.webSession.findUnique({ where: { tokenHash: hash(token) }, include: { subject: true } });
+    const session = await this.db.webSession.findUnique({ where: { tokenHash: hash(token) }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
     if (!session || session.expiresAt <= new Date() || session.audienceHost !== host || (authenticated && !session.subject)) throw new UnauthorizedException({ code: 'session_required' });
     return { session, token };
   }
@@ -95,7 +95,7 @@ export class PassportService {
     catch (error) {
       if (!(error instanceof UnauthorizedException)) throw error;
       const token = opaqueToken();
-      const session = await this.db.webSession.create({ data: { tokenHash: hash(token), audienceHost: this.host(req), expiresAt: new Date(Date.now() + sessionLifetime) }, include: { subject: true } });
+      const session = await this.db.webSession.create({ data: { tokenHash: hash(token), audienceHost: this.host(req), expiresAt: new Date(Date.now() + sessionLifetime) }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
       this.setCookie(req, res, token, sessionLifetime / 1000);
       context = { session, token };
     }
@@ -206,7 +206,7 @@ export class PassportService {
     if (!link.gameConfirmedAt || !link.webConfirmedAt) return link;
     if (!link.subjectId || !link.webSessionId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
     const session = await tx.webSession.findUnique({ where: { id: link.webSessionId } });
-    const subject = await tx.subject.findUnique({ where: { id: link.subjectId } });
+    const subject = await tx.subject.findUnique({ where: { id: link.subjectId }, include: { discordIdentity: { select: { subjectId: true } } } });
     if (!session || session.expiresAt <= new Date() || session.subjectId !== link.subjectId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
     if (!subject || !this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
     const consent = await tx.consentReceipt.findFirst({ where: { subjectId: subject.id, source: 'minecraft_link', contextId: link.id, version: privacyNotice.version }, select: { id: true } });
@@ -227,7 +227,7 @@ export class PassportService {
       if (!found || !equal(found.tokenHash, hash(token))) throw new NotFoundException({ code: 'link_not_found' });
       this.ensurePending(found);
       if (found.webConfirmedAt) throw new ConflictException({ code: 'web_confirmation_consumed' });
-      const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId } });
+      const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId }, include: { discordIdentity: { select: { subjectId: true } } } });
       if (!this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
       await recordConsent(tx, subject.id, 'minecraft_link', id, consent);
       const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId, webConfirmedAt: new Date() } });
@@ -264,7 +264,7 @@ export class PassportService {
     this.service(req);
     return policyTransaction(this.db, async tx => {
       const now = new Date();
-      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true } } } });
+      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true, discordIdentity: { select: { subjectId: true } } } } } });
       const subject = identity.subject;
       const memberStatus = subject ? this.accessStatus(subject, now) : 'unlinked';
       const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
@@ -287,7 +287,7 @@ export class PassportService {
         if (identity.policyFingerprint) await tx.policyEvent.create({ data: { minecraftUuid: uuid, policyVersion } });
       }
       const expires = status === 'active' ? Math.min(now.getTime() + 60000,
-        allowedServers.some(server => server.accessMode !== 'university') || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
+        allowedServers.some(server => server.accessMode === 'roster' || server.accessMode === 'members') || display.member || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
         subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
       return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, allowedServers: serverChoices, display, administrator, telemetry, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(administrator ? Math.min(expires, subject!.universityVerifiedUntil!.getTime()) : expires).toISOString() };
     });

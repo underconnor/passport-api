@@ -8,8 +8,8 @@ import { adminContext, requireAdminTransaction, protectAdministratorTarget } fro
 import { policyTransaction } from './database';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
-export type ServerSettings = { commandName?: string; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
-export type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'>;
+export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
+export type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & { discordIdentity: { subjectId: string | null } | null };
 type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
 
@@ -18,18 +18,18 @@ export function permittedServers(subject: ScopeSubject, servers: ServerRecord[],
   const university = subject.identityProvider === 'usaint' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now);
   const development = allowDevelopment && subject.identityProvider === 'development';
   if (subject.accessSuspended || subject.membershipStatus === 'suspended' || (!university && !development)) return [];
+  const discordLinked = subject.discordIdentity?.subjectId === subject.id;
   const member = subject.membershipStatus === 'active' && subject.verifiedUntil > now;
   return servers.filter(server => server.enabled
-    && (server.accessMode === 'university' ? university : member && (
-      server.accessMode === 'roster' ? subject.allowedServerIds.includes(server.id)
-        : server.accessMode === 'members' ? true
-          : server.accessMode === 'selected' && server.allowedSubjectIds.includes(subject.id)))
+    && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && subject.discordIdentity === null))
+      : server.accessMode === 'selected' ? university && server.allowedSubjectIds.includes(subject.id)
+        : member && (server.accessMode === 'roster' ? subject.allowedServerIds.includes(server.id) : server.accessMode === 'members'))
     && (!applyPersonalLimit || !subject.scopeRestricted || subject.scopeLimit.includes(server.id)));
 }
 
 export function serverDto(server: ServerRecord, now = new Date()) {
   const fresh = (seen: Date | null) => Boolean(seen && seen <= now && now.getTime() - seen.getTime() < 90_000);
-  return { statisticsEnabled: server.statisticsEnabled, id: server.id, commandName: server.commandName, label: server.label, sensitive: server.sensitive, enabled: server.enabled, accessMode: server.accessMode, allowedSubjectIds: server.allowedSubjectIds, paperSeenAt: server.paperSeenAt?.toISOString() ?? null, proxySeenAt: server.proxySeenAt?.toISOString() ?? null, online: fresh(server.paperSeenAt), proxyAvailable: fresh(server.proxySeenAt), createdAt: server.createdAt.toISOString(), updatedAt: server.updatedAt.toISOString() };
+  return { statisticsEnabled: server.statisticsEnabled, id: server.id, commandName: server.commandName, label: server.label, sensitive: server.sensitive, enabled: server.enabled, accessMode: server.accessMode, discordRequirement: server.discordRequirement, allowedSubjectIds: server.allowedSubjectIds, paperSeenAt: server.paperSeenAt?.toISOString() ?? null, proxySeenAt: server.proxySeenAt?.toISOString() ?? null, online: fresh(server.paperSeenAt), proxyAvailable: fresh(server.proxySeenAt), createdAt: server.createdAt.toISOString(), updatedAt: server.updatedAt.toISOString() };
 }
 
 export async function seedServerRegistry(db: PrismaClient, configured: ServerDefinition[]) {
@@ -72,18 +72,19 @@ export async function setServerSettings(p: PassportService, req: Request, id: st
     if (previous.updatedAt.getTime() !== new Date(input.expectedUpdatedAt).getTime()) throw new ConflictException({ code: 'server_changed' });
     if (input.allowedSubjectIds.length && await tx.subject.count({ where: { id: { in: input.allowedSubjectIds }, identityProvider: 'usaint' } }) !== input.allowedSubjectIds.length) throw new ForbiddenException({ code: 'invalid_selected_subjects' });
     const { expectedUpdatedAt: _expected, ...requested } = input;
-    const settings = { ...requested, commandName: input.commandName ?? previous.commandName };
+    const settings = { ...requested, commandName: input.commandName ?? previous.commandName, discordRequirement: input.accessMode === 'university' ? input.discordRequirement ?? previous.discordRequirement : 'any' };
     // Keep command names unique across both administrator names and legacy immutable IDs.
     if (await tx.serverRecord.findFirst({ where: { id: { not: id }, OR: [{ commandName: settings.commandName }, { id: settings.commandName }] }, select: { id: true } })) throw new ConflictException({ code: 'server_command_conflict' });
     const updatedAt = new Date(Math.max(Date.now(), previous.updatedAt.getTime() + 1));
     const updated = await tx.serverRecord.update({ where: { id }, data: { ...settings, updatedAt } });
     // A registry change can affect every linked member, including explicit per-user limits.
+    const rotateTelemetry = settings.discordRequirement !== previous.discordRequirement || (settings.statisticsEnabled !== undefined && settings.statisticsEnabled !== previous.statisticsEnabled);
     const identities = await tx.minecraftIdentity.findMany({ where: { subjectId: { not: null } }, select: { uuid: true } });
     for (const identity of identities) {
-      const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '', ...(settings.statisticsEnabled !== undefined && settings.statisticsEnabled !== previous.statisticsEnabled ? { telemetryEpoch: randomUUID() } : {}) } });
+      const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '', ...(rotateTelemetry ? { telemetryEpoch: randomUUID() } : {}) } });
       await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
     }
-    const before = { commandName: previous.commandName, statisticsEnabled: previous.statisticsEnabled, label: previous.label, sensitive: previous.sensitive, enabled: previous.enabled, accessMode: previous.accessMode, allowedSubjectIds: previous.allowedSubjectIds };
+    const before = { commandName: previous.commandName, statisticsEnabled: previous.statisticsEnabled, label: previous.label, sensitive: previous.sensitive, enabled: previous.enabled, accessMode: previous.accessMode, discordRequirement: previous.discordRequirement, allowedSubjectIds: previous.allowedSubjectIds };
     await tx.auditEvent.create({ data: { action: 'admin.server_updated', actorSubjectId: actor.session.subjectId, objectId: id, details: { before, after: settings } } });
     return { server: serverDto(updated) };
   });

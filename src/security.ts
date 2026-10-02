@@ -37,14 +37,15 @@ export const serverIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 export const serverCommandNameSchema = z.string().transform(value => value.normalize('NFC').toLowerCase()).pipe(z.string().min(1).max(64).regex(/^[a-z0-9가-힣_-]+$/));
 const serverLabelSchema = z.string().trim().min(1).max(80).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 export const serverHeartbeatSchema = z.object({ source: z.enum(['velocity', 'paper']), servers: z.array(z.object({ id: serverIdSchema, label: serverLabelSchema }).strict()).max(64).refine(servers => new Set(servers.map(server => server.id)).size === servers.length) }).strict();
-export const serverSettingsSchema = z.object({ commandName: serverCommandNameSchema.optional(), statisticsEnabled: z.boolean().optional(), label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
+export const serverSettingsSchema = z.object({ commandName: serverCommandNameSchema.optional(), discordRequirement: z.enum(['any', 'linked', 'unlinked']).optional(), statisticsEnabled: z.boolean().optional(), label: serverLabelSchema, sensitive: z.boolean(), enabled: z.boolean(), accessMode: z.enum(['roster', 'members', 'selected', 'university']), allowedSubjectIds: z.array(uuidSchema).max(5000).refine(ids => new Set(ids).size === ids.length), expectedUpdatedAt: z.string().datetime({ offset: true }) }).strict();
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new BadRequestException({ code: 'invalid_request', message: 'Request has invalid fields' });
   return result.data;
 }
 
-export const memberQuerySchema = z.object({ q: z.string().trim().max(128).default(''), membership: z.enum(['all','active','inactive','suspended']).default('all'), sort: z.enum(['name','newest','oldest']).default('name'), limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().max(1024).optional() }).strict();
+const memberIdsSchema = z.string().max(1849).transform(value => value.split(',')).pipe(z.array(uuidSchema).min(1).max(50).refine(ids => new Set(ids).size === ids.length));
+export const memberQuerySchema = z.object({ ids: memberIdsSchema.optional(), q: z.string().trim().max(128).default(''), membership: z.enum(['all','active','inactive','suspended']).default('all'), sort: z.enum(['name','newest','oldest']).default('name'), limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().max(1024).optional() }).strict();
 export const deleteMemberSchema = z.object({ expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmation: z.string().min(1).max(120) }).strict();
 export const playerQuerySchema = z.object({ query: z.string().trim().min(1).max(128) }).strict();
 export const presenceSchema = z.object({ serverId: serverIdSchema, observedAt: z.string().datetime({ offset: true }), players: z.array(uuidSchema).max(500).refine(ids => new Set(ids).size === ids.length) }).strict();

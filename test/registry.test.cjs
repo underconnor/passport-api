@@ -6,7 +6,7 @@ const {PrismaClient}=require('@prisma/client');
 const raw=process.env.TEST_DATABASE_URL;
 if(!raw||!new URL(raw).pathname.endsWith('_test'))throw new Error('Dedicated _test database required');
 const database=new URL(raw);database.searchParams.set('schema','registry_test');
-Object.assign(process.env,{DATABASE_URL:database.href,NODE_ENV:'production',PASSPORT_AUTH_MODE:'university',WEB_ORIGIN:'https://portal.example.test',ADMIN_ORIGIN:'https://admin.example.test',API_SERVICE_TOKEN:'registry-service-'.repeat(4),SESSION_SECRET:'registry-session-'.repeat(4),ROSTER_MATCHING_SECRET:'registry-roster-'.repeat(4),DATA_ENCRYPTION_KEY:'cd'.repeat(32),ADMIN_MFA_REQUIRED:'false',SHEETS_SYNC_ENABLED:'false'});
+Object.assign(process.env,{DATABASE_URL:database.href,NODE_ENV:'production',PASSPORT_AUTH_MODE:'university',WEB_ORIGIN:'https://portal.example.test',ADMIN_ORIGIN:'https://admin.example.test',API_SERVICE_TOKEN:'registry-service-'.repeat(4),PASSPORT_DISCORD_SERVICE_TOKEN:'registry-discord-'.repeat(4),DISCORD_GUILD_ID:'100000000000000001',DISCORD_MEMBER_ROLE_ID:'100000000000000002',SESSION_SECRET:'registry-session-'.repeat(4),ROSTER_MATCHING_SECRET:'registry-roster-'.repeat(4),DATA_ENCRYPTION_KEY:'cd'.repeat(32),ADMIN_MFA_REQUIRED:'false',SHEETS_SYNC_ENABLED:'false'});
 const {createApp}=require('../dist/app');
 const {hash,csrf}=require('../dist/security');
 const {seedServerRegistry}=require('../dist/registry');
@@ -24,7 +24,7 @@ async function policy(identity){return(await service(request(http).get(`/v1/mine
 before(async()=>{await db.$connect();});
 after(async()=>{await db.$disconnect();});
 beforeEach(async()=>{
- await db.$executeRawUnsafe('TRUNCATE TABLE "ServerRecord", "ConsumedUniversityToken", "UniversityAuthRequest", "Administrator", "AuditEvent", "PolicyEvent", "LinkSession", "WebSession", "MinecraftIdentity", "Subject", "RosterMembership", "RosterSnapshot" RESTART IDENTITY CASCADE');
+ await db.$executeRawUnsafe('TRUNCATE TABLE "DiscordIdentity", "DiscordLinkSession", "ServerRecord", "ConsumedUniversityToken", "UniversityAuthRequest", "Administrator", "AuditEvent", "PolicyEvent", "LinkSession", "WebSession", "MinecraftIdentity", "Subject", "RosterMembership", "RosterSnapshot" RESTART IDENTITY CASCADE');
  app=await createApp();http=app.getHttpServer();const actor=await subject();admin=await session(actor);
  await db.administrator.create({data:{subjectId:actor.id,enabled:true,role:'owner',totpSecret:''}});
 });
@@ -62,7 +62,7 @@ test('registry members and selected modes share policy, portal and admin eligibi
  assert.deepEqual((await policy(identity)).allowedServerIds,[]);
  await browser(request(http).put(`/v1/admin/members/${member.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['creative']}).expect(200);
  assert.deepEqual((await policy(identity)).allowedServerIds,['creative']);
- await db.subject.update({where:{id:member.id},data:{membershipStatus:'inactive'}});assert.deepEqual((await policy(identity)).allowedServerIds,[]);
+ await db.subject.update({where:{id:member.id},data:{membershipStatus:'inactive'}});assert.deepEqual((await policy(identity)).allowedServerIds,['creative']);
 });
 
 test('administrative server writes enforce CSRF, selected school identities and optimistic settings versions',async()=>{
@@ -123,14 +123,15 @@ test('university is opt-in: nonmembers see only allowed servers and can link wit
  assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked',subjectId:outsider.id}}),1);
 });
 
-test('roster, members and selected keep the active membership gate even when the same nonmember has university access',async()=>{
+test('roster and members keep the membership gate while selected grants explicitly chosen school users',async()=>{
  const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(Date.now()+3600000)}),portal=await session(outsider,PORTAL);
  await publicServer();await heartbeat('paper',[{id:'club',label:'회원 전용 비공개 이름'},{id:'selected',label:'선택 회원 전용 이름'}]);
  await settings('club',{enabled:true,accessMode:'members'});await settings('selected',{enabled:true,accessMode:'selected',allowedSubjectIds:[outsider.id]});
  const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'RegistryGuest',subjectId:outsider.id}});
- assert.deepEqual((await policy(identity)).allowedServerIds,['campus']);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['campus']);
- const response=JSON.stringify(await visibleServers(portal));assert.ok(!response.includes('회원 전용'));assert.ok(!response.includes('lobby'));assert.ok(!response.includes('survival'));
- await settings('campus',{enabled:false});const denied=await policy(identity);assert.deepEqual(denied.allowedServerIds,[]);assert.equal(denied.status,'revoked');assert.deepEqual(await visibleServers(portal),[]);
+ assert.deepEqual((await policy(identity)).allowedServerIds,['campus','selected']);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['campus','selected']);
+ const response=JSON.stringify(await visibleServers(portal));assert.ok(!response.includes('비공개 이름'));assert.ok(!response.includes('lobby'));assert.ok(!response.includes('survival'));
+ await settings('campus',{enabled:false});assert.deepEqual((await policy(identity)).allowedServerIds,['selected']);
+ await settings('selected',{allowedSubjectIds:[]});const denied=await policy(identity);assert.deepEqual(denied.allowedServerIds,[]);assert.equal(denied.status,'revoked');assert.deepEqual(await visibleServers(portal),[]);
 });
 
 test('university still requires current real school identity, global non-suspension and personal scope',async()=>{
@@ -287,4 +288,132 @@ test('command-name migration backfills IDs atomically without changing labels, r
  await assert.rejects(db.serverRecord.create({data:{id:'invalid_command',commandName:'UPPER CASE',label:'Synthetic'}}),/ServerRecord_commandName_check/);
  await assert.rejects(db.$executeRawUnsafe('UPDATE "ServerRecord" SET "commandName"=NULL WHERE "id"=\'lobby\''),error=>error.code==='P2010'&&error.meta?.code==='23502');
  assert.equal((await db.serverRecord.findUnique({where:{id:'lobby'}})).commandName,'lobby');
+});
+
+const discordBot=r=>r.set('Authorization',`Bearer ${process.env.PASSPORT_DISCORD_SERVICE_TOKEN}`);
+let discordSequence=500000000000000000n;
+async function connectDiscord(portal){
+ const value=String(++discordSequence),result=await discordBot(request(http).post('/v1/discord/link-sessions')).send({discordUserId:value,guildId:process.env.DISCORD_GUILD_ID,discordUsername:'synthetic_registry',interactionId:value}).expect(201);
+ const token=new URL(result.body.url).hash.slice(7);
+ await browser(request(http).post(`/v1/discord/link-sessions/${result.body.id}/web-confirm`),portal,true).send({token,consent:{accepted:true,version:privacyNotice.version}}).expect(200);
+ return result.body;
+}
+async function disconnectDiscord(owner,status=200){return browser(request(http).delete(`/v1/admin/members/${owner.id}/discord`),admin,true).expect(status);}
+async function discordServers(){
+ for(const rule of ['any','linked','unlinked']){
+  await heartbeat('paper',[{id:`campus_${rule}`,label:`학교 ${rule}`}]);
+  await settings(`campus_${rule}`,{enabled:true,accessMode:'university',discordRequirement:rule});
+ }
+}
+const activityCounters={playSeconds:30,blocksBroken:2,blocksPlaced:1,damageTakenMilli:1000,deaths:0,mobKills:0,playerKills:0,distanceCm:20};
+async function activityFor(identity,serverId,epoch=identity.telemetryEpoch){return(await service(request(http).post('/v1/minecraft/stats/batches')).send({id:randomUUID(),serverId,records:[{minecraftUuid:identity.uuid,epoch,...activityCounters}]}).expect(200)).body;}
+
+test('Discord settings default to any, preserve old university edits and normalize other modes without changing immutable scopes',async()=>{
+ const original=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(original.discordRequirement,'any');
+ const legacy=await db.$queryRawUnsafe("INSERT INTO \"ServerRecord\" (\"id\",\"label\") VALUES ('legacy_discord','Legacy insert') RETURNING \"discordRequirement\",\"commandName\"");assert.deepEqual(legacy,[{discordRequirement:'any',commandName:'legacy_discord'}]);
+ await publicServer();assert.equal((await db.serverRecord.findUnique({where:{id:'campus'}})).discordRequirement,'any');
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'SettingsEpoch',subjectId:admin.subject.id}});await policy(identity);
+ let response=await settings('campus',{discordRequirement:'linked'});assert.equal(response.body.server.discordRequirement,'linked');
+ const changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.notEqual(changed.telemetryEpoch,identity.telemetryEpoch);assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),1);
+ response=await settings('campus',{label:'새 표시명'});assert.equal(response.body.server.discordRequirement,'linked');
+ assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}})).telemetryEpoch,changed.telemetryEpoch);
+ await heartbeat('paper',[{id:'campus',label:'ignored'}]);await seedServerRegistry(db,[{id:'campus',label:'ignored'}]);
+ assert.equal((await db.serverRecord.findUnique({where:{id:'campus'}})).discordRequirement,'linked');
+ response=await settings('campus',{accessMode:'selected',allowedSubjectIds:[admin.subject.id],discordRequirement:'unlinked'});assert.equal(response.body.server.discordRequirement,'any');
+ assert.deepEqual(response.body.server.allowedSubjectIds,[admin.subject.id]);assert.equal(response.body.server.id,'campus');
+ response=await settings('campus',{accessMode:'university'});assert.equal(response.body.server.discordRequirement,'any');
+ for(const discordRequirement of ['',null,'invalid',true])await settings('campus',{discordRequirement},400);
+ await assert.rejects(db.serverRecord.update({where:{id:'campus'},data:{discordRequirement:'invalid'}}),/ServerRecord_discordRequirement_check/);
+ const current=await db.serverRecord.findUnique({where:{id:'campus'}});
+ const body={label:current.label,enabled:true,sensitive:false,accessMode:'university',discordRequirement:'linked',allowedSubjectIds:[],expectedUpdatedAt:current.updatedAt.toISOString()};
+ await browser(request(http).put('/v1/admin/servers/campus')).send(body).expect(403);
+ const outsider=await session(await subject(),PORTAL);await browser(request(http).put('/v1/admin/servers/campus'),outsider,true).send(body).expect(403);
+ await browser(request(http).put('/v1/admin/servers/campus'),admin,true).send(body).expect(200);
+ await browser(request(http).put('/v1/admin/servers/campus'),admin,true).send(body).expect(409);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.server_updated',objectId:'campus'},orderBy:{createdAt:'desc'}});assert.equal(audit.details.after.discordRequirement,'linked');
+});
+
+test('actual Discord connection scopes policy, portal, admin eligibility, personal statistics, ingestion and presence equally',async()=>{
+ await discordServers();
+ const owner=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0),discordId:'999999999999999999',discordUpdatedAt:new Date()}),portal=await session(owner,PORTAL);
+ await db.consentReceipt.create({data:{subjectId:owner.id,version:privacyNotice.version,source:'portal_login',contextId:randomUUID(),acceptedAt:new Date()}});
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'DiscordMatrix',subjectId:owner.id}});
+ async function check(expected){
+  assert.deepEqual((await policy(identity)).allowedServerIds,expected);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),expected);
+  const member=(await browser(request(http).get('/v1/admin/members').query({ids:owner.id})).expect(200)).body.members[0];assert.deepEqual(member.eligibleServerIds,expected);
+  for(const url of ['/v1/me/stats',`/v1/minecraft/players/${identity.uuid}/stats`]){
+   const result=await (url.includes('/minecraft/')?service(request(http).get(url)):browser(request(http).get(url),portal)).expect(200);
+   assert.deepEqual(result.body.servers.map(row=>row.serverId),expected);assert.equal(result.body.collection.effective,expected.length>0);
+  }
+  const fresh=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});
+  for(const rule of ['any','linked','unlinked']){
+   const serverId=`campus_${rule}`,allowed=expected.includes(serverId);
+   assert.equal((await activityFor(fresh,serverId)).received,allowed?1:0);
+   const presence=await service(request(http).post('/v1/minecraft/presence')).send({serverId,observedAt:new Date().toISOString(),players:[identity.uuid]}).expect(200);assert.equal(presence.body.received,allowed?1:0);
+  }
+ }
+ await check(['campus_any','campus_unlinked']);
+ await browser(request(http).put(`/v1/admin/members/${owner.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['campus_linked']}).expect(403);
+ await connectDiscord(portal);await check(['campus_any','campus_linked']);
+ await browser(request(http).put(`/v1/admin/members/${owner.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['campus_linked']}).expect(200);
+ assert.deepEqual((await policy(identity)).allowedServerIds,['campus_linked']);
+ await browser(request(http).put(`/v1/admin/members/${owner.id}/access`),admin,true).send({suspended:false,restricted:false,serverIds:[]}).expect(200);
+ await disconnectDiscord(owner);await check(['campus_any','campus_unlinked']);
+});
+
+test('Discord link and unlink atomically publish policy invalidation and rotate epochs so old batches cannot regain authorization',async()=>{
+ await discordServers();const owner=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}),portal=await session(owner,PORTAL);
+ await db.consentReceipt.create({data:{subjectId:owner.id,version:privacyNotice.version,source:'portal_login',contextId:randomUUID(),acceptedAt:new Date()}});
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'DiscordEpoch',subjectId:owner.id}});await policy(identity);
+ for(const linked of [true,false,true]){
+  const before=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}}),events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+  if(linked)await connectDiscord(portal);else await disconnectDiscord(owner);
+  const after=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(after.policyVersion,before.policyVersion+1);assert.equal(after.policyFingerprint,'');assert.notEqual(after.telemetryEpoch,before.telemetryEpoch);
+  assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
+  const event=await db.policyEvent.findFirst({where:{minecraftUuid:identity.uuid},orderBy:{id:'desc'}});assert.equal(event.policyVersion,after.policyVersion);
+  const result=await policy(identity);assert.equal(result.policyVersion,after.policyVersion);assert.equal(result.telemetry.epoch,after.telemetryEpoch);
+  assert.equal((await activityFor(after,'campus_any',before.telemetryEpoch)).received,0);assert.equal((await activityFor(after,'campus_any')).received,1);
+ }
+ const receipts=await db.consentReceipt.count({where:{subjectId:owner.id,source:'discord_link'}});assert.equal(receipts,2);
+ await disconnectDiscord(owner);const before=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}}),events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+ await disconnectDiscord(owner);const after=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(after.policyVersion,before.policyVersion);assert.equal(after.telemetryEpoch,before.telemetryEpoch);assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events);
+});
+
+test('two-sided Minecraft linking rechecks Discord scope at web and final game confirmation',async()=>{
+ await publicServer();await settings('campus',{discordRequirement:'linked'});
+ const owner=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}),portal=await session(owner,PORTAL),link=await gameLink();
+ assert.equal((await webLink(link,portal).expect(403)).body.code,'membership_required');
+ await connectDiscord(portal);await webLink(link,portal).expect(200);await disconnectDiscord(owner);
+ assert.equal((await confirmGame(link).expect(403)).body.code,'membership_required');
+ assert.equal((await db.linkSession.findUnique({where:{id:link.id}})).gameConfirmedAt,null);assert.equal((await db.minecraftIdentity.findUnique({where:{uuid:link.minecraftUuid}})).subjectId,null);
+ await connectDiscord(portal);await confirmGame(link).expect(200);assert.deepEqual((await policy({uuid:link.minecraftUuid})).allowedServerIds,['campus']);
+});
+
+test('Discord linkage never bypasses school expiry, membership suspension or personal suspension',async()=>{
+ await discordServers();const owner=await subject(),portal=await session(owner,PORTAL);await connectDiscord(portal);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'DiscordExpiry',subjectId:owner.id}});
+ assert.ok((await policy(identity)).allowedServerIds.includes('campus_linked'));
+ for(const change of [{universityVerifiedUntil:new Date(0)},{membershipStatus:'suspended'},{accessSuspended:true}]){
+  await db.subject.update({where:{id:owner.id},data:{universityVerifiedUntil:new Date(Date.now()+3600000),membershipStatus:'active',accessSuspended:false,...change}});
+  assert.deepEqual((await policy(identity)).allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+ }
+ await db.subject.update({where:{id:owner.id},data:{accessSuspended:false,membershipStatus:'active',verifiedUntil:new Date(0)}});
+ assert.deepEqual((await policy(identity)).allowedServerIds,['campus_any','campus_linked']);
+});
+
+test('selected school users can complete Minecraft linking without roster membership and retain a valid lease until school expiry',async()=>{
+ const owner=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0),roleLabel:'old role'}),portal=await session(owner,PORTAL);
+ await settings('lobby',{accessMode:'selected',allowedSubjectIds:[owner.id]});
+ const link=await gameLink();await webLink(link,portal).expect(200);await confirmGame(link).expect(200);
+ let result=await policy({uuid:link.minecraftUuid});assert.equal(result.status,'active');assert.deepEqual(result.allowedServerIds,['lobby']);assert.equal(result.display.member,false);assert.equal(result.display.roleLabel,'');assert.ok(Date.parse(result.expiresAt)-Date.parse(result.issuedAt)>59000);
+ assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['lobby']);
+ assert.deepEqual((await browser(request(http).get('/v1/admin/members').query({ids:owner.id})).expect(200)).body.members[0].eligibleServerIds,['lobby']);
+ assert.deepEqual((await browser(request(http).get('/v1/me/stats'),portal).expect(200)).body.servers.map(row=>row.serverId),['lobby']);
+ const notSelected=await session(await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}),PORTAL);assert.deepEqual(await visibleServers(notSelected),[]);
+ await db.subject.update({where:{id:owner.id},data:{scopeRestricted:true,scopeLimit:[]}});assert.deepEqual((await policy({uuid:link.minecraftUuid})).allowedServerIds,[]);
+ await db.subject.update({where:{id:owner.id},data:{scopeRestricted:false,universityVerifiedUntil:new Date(Date.now()+15000)}});
+ result=await policy({uuid:link.minecraftUuid});assert.ok(Date.parse(result.expiresAt)-Date.parse(result.issuedAt)<=15000);assert.ok(Date.parse(result.expiresAt)>Date.parse(result.issuedAt));
+ for(const change of [{accessSuspended:true},{accessSuspended:false,membershipStatus:'suspended'},{membershipStatus:'inactive',universityVerifiedUntil:new Date(0)}]){
+  await db.subject.update({where:{id:owner.id},data:change});assert.deepEqual((await policy({uuid:link.minecraftUuid})).allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+ }
 });

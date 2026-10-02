@@ -111,7 +111,7 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
     await requireAdminTransaction(p, tx, actor);
     await protectAdministratorTarget(tx, actor.session.subjectId!, id);
     if (actor.session.subjectId === id && input.suspended) throw new ConflictException({ code: 'self_admin_change_forbidden' });
-    const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true } });
+    const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true, discordIdentity: { select: { subjectId: true } } } });
     if (!current || current.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
     const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
     const eligible = p.gameServers({ ...current, accessSuspended: false }, records, new Date(), false).map(server => server.id);

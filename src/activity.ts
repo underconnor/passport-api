@@ -34,7 +34,7 @@ export async function collectActivity(p: PassportService, req: Request, input: A
     if (!server?.enabled) throw new ConflictException({ code: 'server_not_enabled' });
     let received = 0;
     for (const row of input.records) {
-      const identity = await tx.minecraftIdentity.findUnique({ where: { uuid: row.minecraftUuid }, include: { subject: true } });
+      const identity = await tx.minecraftIdentity.findUnique({ where: { uuid: row.minecraftUuid }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
       if (!server.statisticsEnabled || !identity?.subject || identity.telemetryEpoch !== row.epoch || !await gameConsent(tx, identity.subject.id) || !p.gameServers(identity.subject, [server], now).length) continue;
       const generation = await tx.activityGeneration.upsert({ where: { epoch: row.epoch }, create: { epoch: row.epoch, subjectId: identity.subject.id, minecraftUuid: row.minecraftUuid }, update: {} });
       if (generation.subjectId !== identity.subject.id || generation.minecraftUuid !== row.minecraftUuid) continue;
@@ -61,7 +61,7 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
     const memberWhere = statisticsSubjectWhere(kind === 'admin' ? membership : 'all', now);
     const generationWhere = subjectId ? { subjectId } : kind === 'admin' && membership === 'active' ? { subject: memberWhere } : {};
     let records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId } }); records = subject ? p.gameServers(subject, records) : []; }
+    if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId }, include: { discordIdentity: { select: { subjectId: true } } } }); records = subject ? p.gameServers(subject, records) : []; }
     const presenceServers = records;
     const excludedServerIds = records.filter(server => !server.statisticsEnabled).map(server => server.id);
     records = records.filter(server => server.statisticsEnabled);
@@ -84,7 +84,7 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
     const presences = await tx.playerPresence.findMany({ where: subjectId ? { minecraftUuid: identity?.uuid ?? '00000000-0000-0000-0000-000000000000' } : { expiresAt: { gt: now }, ...(memberIdentities ? { minecraftUuid: { in: memberIdentities.map(identity => identity.uuid) } } : {}) } });
     const visible = presences.filter(row => row.expiresAt > now && presenceServers.some(server => server.id === row.serverId));
     const servers = records.map(server => ({ serverId: server.id, label: server.label, collectionEnabled: true, ...(rows.find(row => row.serverId === server.id) ?? { ...emptyCounters(), firstCollectedAt: null, lastCollectedAt: null }), onlinePlayerCount: visible.filter(row => row.serverId === server.id).length }));
-    const subject = subjectId ? await tx.subject.findUnique({ where: { id: subjectId } }) : null;
+    const subject = subjectId ? await tx.subject.findUnique({ where: { id: subjectId }, include: { discordIdentity: { select: { subjectId: true } } } }) : null;
     const consentGranted = subjectId ? await gameConsent(tx, subjectId) : null;
     const effective = subject ? Boolean(consentGranted) && p.gameServers(subject, records).length > 0 : null;
     const collection = { effective, enabled: subject ? true : null, managedBy: 'administrator', consentGranted, excludedServerIds, historyRetained: true };

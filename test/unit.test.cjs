@@ -82,3 +82,30 @@ test('server command names normalize NFC and ASCII case without trimming or chan
  const parsed=serverSettingsSchema.parse({...original,commandName:'CAMPUS-로비'});assert.equal(parsed.commandName,'campus-로비');assert.equal(parsed.label,original.label);
  assert.equal(serverSettingsSchema.safeParse({...original,id:'cannot-change'}).success,false);
 });
+
+test('university Discord requirements use only an explicit identity relation and preserve the other scope gates',()=>{
+ const {permittedServers}=require('../dist/registry'),now=new Date('2026-10-03T00:00:00Z'),future=new Date(now.getTime()+60000);
+ const base={id:'subject',identityProvider:'usaint',universityVerifiedUntil:future,membershipStatus:'inactive',verifiedUntil:new Date(0),accessSuspended:false,scopeRestricted:false,scopeLimit:[],allowedServerIds:['roster'],discordIdentity:null,discordId:'self-reported-only'};
+ const servers=['any','linked','unlinked'].map(discordRequirement=>({id:discordRequirement,enabled:true,accessMode:'university',discordRequirement}));
+ const ids=(subject=base,options={})=>permittedServers(subject,servers,{now,...options}).map(row=>row.id);
+ assert.deepEqual(ids(),['any','unlinked']);assert.deepEqual(ids({...base,discordIdentity:{subjectId:'subject'}}),['any','linked']);
+ for(const discordIdentity of [undefined,{subjectId:null},{subjectId:'other'}])assert.deepEqual(ids({...base,discordIdentity}),['any']);
+ for(const change of [{accessSuspended:true},{membershipStatus:'suspended'},{universityVerifiedUntil:now},{identityProvider:'development'}])assert.deepEqual(ids({...base,...change}),[]);
+ assert.deepEqual(ids({...base,scopeRestricted:true,scopeLimit:['linked']}),[]);
+ assert.deepEqual(ids({...base,scopeRestricted:true,scopeLimit:['any']}),['any']);
+ const member={...base,membershipStatus:'active',verifiedUntil:future},memberServers=['roster','members','selected'].map(accessMode=>({id:accessMode,accessMode,enabled:true,discordRequirement:'linked',allowedSubjectIds:['subject']}));
+ assert.deepEqual(permittedServers(member,memberServers,{now}).map(row=>row.id),['roster','members','selected']);
+ assert.deepEqual(permittedServers(base,memberServers,{now}).map(row=>row.id),['selected']);
+ assert.deepEqual(permittedServers({...base,identityProvider:'development'},[memberServers[2]],{now,allowDevelopment:true}),[]);
+ assert.deepEqual(permittedServers(base,[{...servers[0],discordRequirement:'unknown'}],{now}),[]);
+});
+test('Discord server settings accept only the optional enum and member ID resolution is bounded and normalized',()=>{
+ const {memberQuerySchema}=require('../dist/security'),{randomUUID}=require('node:crypto');
+ const settings={label:'학교',sensitive:false,enabled:true,accessMode:'university',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-03T00:00:00.000Z'};
+ for(const value of ['any','linked','unlinked'])assert.equal(serverSettingsSchema.parse({...settings,discordRequirement:value}).discordRequirement,value);
+ assert.equal(serverSettingsSchema.parse(settings).discordRequirement,undefined);
+ for(const value of ['',null,true,'LINKED','unknown'])assert.equal(serverSettingsSchema.safeParse({...settings,discordRequirement:value}).success,false);
+ const ids=Array.from({length:50},()=>randomUUID());assert.deepEqual(memberQuerySchema.parse({ids:ids.join(',')}).ids,ids);
+ assert.deepEqual(memberQuerySchema.parse({ids:ids[0].toUpperCase()}).ids,[ids[0]]);assert.equal(memberQuerySchema.parse({}).ids,undefined);
+ for(const value of ['',[],ids[0]+',',','+ids[0],ids[0]+', '+ids[1],ids[0]+','+ids[0].toUpperCase(),ids.join(',')+','+randomUUID(),'invalid'])assert.equal(memberQuerySchema.safeParse({ids:value}).success,false,JSON.stringify(value));
+});

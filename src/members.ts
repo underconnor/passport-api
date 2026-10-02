@@ -13,12 +13,12 @@ import { equal, hash } from './security';
 import { verifiedStudentId } from './school-identity';
 
 type Account = Subject & { minecraft: MinecraftIdentity | null; discordIdentity: DiscordIdentity | null; administrator: Administrator | null };
-export type MemberQuery = { q: string; membership: 'all' | 'active' | 'inactive' | 'suspended'; sort: 'name' | 'newest' | 'oldest'; limit: number; cursor?: string };
+export type MemberQuery = { ids?: string[]; q: string; membership: 'all' | 'active' | 'inactive' | 'suspended'; sort: 'name' | 'newest' | 'oldest'; limit: number; cursor?: string };
 export function accountRevision(account: Account) {
   return hash(JSON.stringify({ id: account.id, displayName: account.displayName, department: account.department, admissionYear: account.admissionYear, identityProvider: account.identityProvider, universityVerifiedUntil: account.universityVerifiedUntil, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, minecraft: account.minecraft && [account.minecraft.uuid, account.minecraft.name, account.minecraft.subjectId, account.minecraft.telemetryEpoch], discord: account.discordIdentity && [account.discordIdentity.discordUserId, account.discordIdentity.subjectId, account.discordIdentity.verifiedAt], administrator: account.administrator ? [account.administrator.enabled, account.administrator.role, account.administrator.revokedAt] : null }));
 }
 function cursorSignature(secret: string, payload: string) { return createHmac('sha256', secret).update(`members:${payload}`).digest('base64url'); }
-function queryKey(input: MemberQuery) { return hash(JSON.stringify([input.q, input.membership, input.sort, input.limit])); }
+function queryKey(input: MemberQuery) { return hash(JSON.stringify([input.q, input.membership, input.sort, input.limit, ...(input.ids ? [input.ids] : [])])); }
 function cursorOffset(input: MemberQuery, secret: string) {
   if (!input.cursor) return 0;
   const [payload, signature, extra] = input.cursor.split('.');
@@ -31,6 +31,7 @@ export async function adminMembers(p: PassportService, req: Request, input: Memb
   await adminContext(p, req);
   const offset = cursorOffset(input, p.config.sessionSecret), now = new Date();
   const filters: Prisma.SubjectWhereInput[] = [{ identityProvider: 'usaint' }];
+  if (input.ids) filters.push({ id: { in: input.ids } });
   const active: Prisma.SubjectWhereInput = { membershipStatus: 'active', verifiedUntil: { gt: now }, accessSuspended: false };
   const suspended: Prisma.SubjectWhereInput = { OR: [{ accessSuspended: true }, { membershipStatus: 'suspended' }] };
   if (input.membership === 'active') filters.push(active);
