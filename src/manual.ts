@@ -19,7 +19,9 @@ export function normalizeNotionUrl(raw: string, embed = false): string | null {
   const site = notionSiteHost.test(url.hostname);
   if (!site && !notionWorkspaceHost.test(url.hostname)) return null;
   if (embed) {
-    if (!site || !/^\/ebd\/[a-f\d]{32}\/?$/i.test(url.pathname)) return null;
+    // Notion's copied embed URL may contain an empty workspace segment.
+    // Preserve /ebd//<page> exactly instead of rewriting a working Notion URL.
+    if (!site || !/^\/ebd\/{1,2}[a-f\d]{32}\/?$/i.test(url.pathname)) return null;
   } else if (site) {
     // Published home pages and custom slugs are supported alongside page IDs.
     let path: string;

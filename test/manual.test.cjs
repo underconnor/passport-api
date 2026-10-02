@@ -38,14 +38,22 @@ test('Notion registration validates host/protocol/page and only preserves a vali
   for (const value of ['http://passport-fixture.notion.site/manual', 'javascript:alert(1)', 'https://notion.site.evil.test/manual', 'https://evilnotion.site/manual', 'https://passport-fixture.notion.site:8443/manual', 'https://user:secret@passport-fixture.notion.site/manual', 'https://127.0.0.1/manual', 'https://notion.so/login?redirect=secret', 'https://passport-fixture.notion.site/a/b', 'https://passport-fixture.notion.site\\@evil.test/manual']) assert.equal(normalizeNotionUrl(value), null, value);
   for (const changes of [{ embedUrl: 'https://evil.test/ebd/' + page }, { embedUrl: `https://other.notion.site/ebd/${page}` }, { embedUrl: `https://passport-fixture.notion.site/ebd/${'f'.repeat(32)}` }, { notionUrl: null }, { notionUrl: `https://notion.so/${page}` }, { embedUrl: `<iframe src="${embedded}"></iframe>` }, { title: 'bad\nname' }, { expectedRevision: -1 }, { unexpected: true }]) assert.equal(manualSettingsSchema.safeParse(input(changes)).success, false);
   assert.equal(manualSettingsSchema.safeParse(input({ notionUrl: 'https://passport-fixture.notion.site/manual' })).success, true);
+  const copiedEmbed = embedded.replace('/ebd/', '/ebd//');
+  assert.equal(normalizeNotionUrl(copiedEmbed, true), copiedEmbed);
+  assert.equal(normalizeNotionUrl(copiedEmbed+'?pvs=4#tracking', true), copiedEmbed);
+  assert.equal(manualSettingsSchema.parse(input({ embedUrl: copiedEmbed })).embedUrl, copiedEmbed);
+  for (const invalid of [embedded.replace('/ebd/', '/ebd///'), copiedEmbed+'/extra', copiedEmbed.replace(page, 'f'.repeat(32))]) {
+    assert.equal(manualSettingsSchema.safeParse(input({ embedUrl: invalid })).success, false);
+  }
 });
 
 test('public manual starts unconfigured and exposes only saved display fields', async () => {
   assert.deepEqual((await request(http).get('/v1/manual').expect(200)).body, { title: '매뉴얼', notionUrl: null, embedUrl: null, configured: false, updatedAt: null });
   const initial = (await browser(request(http).get('/v1/admin/manual')).expect(200)).body; assert.equal(initial.revision, 0);
-  const saved = (await put(input())).body; assert.equal(saved.revision, 1); assert.equal(saved.configured, true);
+  const copiedEmbed = embedded.replace('/ebd/', '/ebd//');
+  const saved = (await put(input({ embedUrl: copiedEmbed }))).body; assert.equal(saved.revision, 1); assert.equal(saved.configured, true);
   const publicResult = await request(http).get('/v1/manual').expect(200); assert.equal(publicResult.headers['cache-control'], 'no-store');
-  assert.deepEqual(publicResult.body, { title: saved.title, notionUrl: source, embedUrl: embedded, configured: true, updatedAt: saved.updatedAt });
+  assert.deepEqual(publicResult.body, { title: saved.title, notionUrl: source, embedUrl: copiedEmbed, configured: true, updatedAt: saved.updatedAt });
   assert.equal('revision' in publicResult.body, false);
   const audit = await db.auditEvent.findFirst({ where: { action: 'admin.manual_updated' } }); assert.deepEqual(audit.details, { revision: 1, configured: true, embedded: true });
   for (const privateValue of [owner.token, source, embedded, owner.subject.universityKey]) assert.ok(!JSON.stringify(audit).includes(privateValue));
