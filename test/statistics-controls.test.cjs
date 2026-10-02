@@ -178,3 +178,119 @@ test('upgrade migration preserves cumulative data and atomically retires only pe
   await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
  },{timeout:30000});
 });
+
+const {counterNames,emptyCounters}=require('../dist/activity');
+const fixtureCounters=scale=>Object.fromEntries(counterNames.map((key,index)=>[key,BigInt(scale*(index+1))]));
+async function historical(a,scale,{serverId='lobby',day=koreaDate(new Date()),first=new Date(Date.now()-60000),last=new Date(),epoch=a.minecraft.telemetryEpoch}={}){
+ await db.activityGeneration.upsert({where:{epoch},create:{epoch,subjectId:a.owner.id,minecraftUuid:a.minecraft.uuid},update:{}});
+ const counters=fixtureCounters(scale),increment=Object.fromEntries(counterNames.map(key=>[key,{increment:counters[key]}]));
+ await db.activityTotal.upsert({where:{epoch_serverId:{epoch,serverId}},create:{epoch,serverId,...counters,firstCollectedAt:first,lastCollectedAt:last},update:{...increment,lastCollectedAt:last}});
+ await db.activityDaily.create({data:{epoch,serverId,date:new Date(day),...counters,firstCollectedAt:first,lastCollectedAt:last}});
+}
+const adminStats=(query={},user=admin,status=200)=>browser(request(http).get('/v1/admin/stats').query(query),user).expect(status);
+function assertCounters(actual,scale){for(const [index,key] of counterNames.entries())assert.equal(actual[key],scale*(index+1),key);}
+function excelRows(buffer,sheet=1){
+ const source=strFromU8(unzipSync(buffer)[`xl/worksheets/sheet${sheet}.xml`]);
+ const unescape=value=>value.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&');
+ return [...source.matchAll(/<row\b[^>]*>(.*?)<\/row>/gs)].map(row=>[...row[1].matchAll(/<c\b[^>]*>(.*?)<\/c>/gs)].map(cell=>{const text=cell[1].match(/<t\b[^>]*>(.*?)<\/t>/s);return text?unescape(text[1]):Number(cell[1].match(/<v>(.*?)<\/v>/s)[1]);}));
+}
+test('administrator membership filter applies one current cohort to every counter, history timestamp, player and presence count',async()=>{
+ await db.subject.update({where:{id:admin.subject.id},data:{membershipStatus:'inactive'}});
+ const cases=[{}, {universityVerifiedUntil:new Date(0)}, {membershipStatus:'inactive'}, {verifiedUntil:new Date(0)}, {accessSuspended:true}, {membershipStatus:'suspended'}, {identityProvider:'development'}];
+ const actors=[];let scale=1;
+ const first=new Date('2026-09-30T00:00:00Z'),last=new Date('2026-10-01T00:00:00Z');
+ for(const [index,changes] of cases.entries()){
+  const a=await linked(changes);actors.push(a);
+  await historical(a,scale,{first:index<2?first:new Date('2020-01-01T00:00:00Z'),last:index<2?last:new Date('2030-01-01T00:00:00Z')});
+  await db.playerPresence.create({data:{minecraftUuid:a.minecraft.uuid,serverId:index===1?'survival':'lobby',observedAt:new Date(),expiresAt:new Date(Date.now()+60000)}});scale*=2;
+ }
+ // A second epoch of the same member contributes counters without adding a player.
+ await historical(actors[0],3,{epoch:randomUUID(),first,last});
+ await historical(actors[0],1000,{serverId:'survival',first:new Date('2010-01-01T00:00:00Z'),last:new Date('2040-01-01T00:00:00Z')});
+ await serverCollection('survival',false);
+ const plain=(await adminStats()).body,all=(await adminStats({membership:'all'})).body,active=(await adminStats({membership:'active'})).body;
+ assert.deepEqual(plain,all);assertCounters(all.totals,130);assertCounters(active.totals,6);
+ assert.equal(all.playerCount,7);assert.equal(active.playerCount,2);
+ assert.equal(all.onlinePlayerCount,7);assert.equal(active.onlinePlayerCount,2);
+ assert.equal(active.servers.length,1);assert.equal(active.servers[0].serverId,'lobby');assertCounters(active.servers[0],6);assert.equal(active.servers[0].onlinePlayerCount,1);
+ assert.equal(active.daily.length,1);assertCounters(active.daily[0],6);
+ assert.equal(active.firstCollectedAt,first.toISOString());assert.equal(active.lastCollectedAt,last.toISOString());
+ assert.equal(active.servers[0].firstCollectedAt,first.toISOString());assert.equal(active.servers[0].lastCollectedAt,last.toISOString());
+ const members=(await browser(request(http).get('/v1/admin/members').query({membership:'active'})).expect(200)).body.members;
+ assert.deepEqual(members.map(row=>row.id).sort(),actors.slice(0,2).map(row=>row.owner.id).sort());
+ assert.equal(await db.activityTotal.count(),9); // Filtering never deletes history or toggles collection.
+ assert.equal((await db.serverRecord.findUnique({where:{id:'survival'}})).statisticsEnabled,false);
+});
+test('period statistics use current membership rather than past membership and retain current online semantics',async()=>{
+ const a=await linked(),oldDay=koreaDate(new Date(Date.now()-86400000)),today=koreaDate(new Date());
+ await historical(a,10,{day:oldDay});await historical(a,3,{day:today});
+ await db.playerPresence.create({data:{minecraftUuid:a.minecraft.uuid,serverId:'lobby',observedAt:new Date(),expiresAt:new Date(Date.now()+60000)}});
+ const filtered=(await adminStats({membership:'active',from:oldDay,to:oldDay})).body;
+ assertCounters(filtered.totals,10);assertCounters(filtered.daily[0],10);assert.equal(filtered.playerCount,1);assert.equal(filtered.onlinePlayerCount,1);
+ assertCounters((await adminStats({membership:'active'})).body.totals,13);
+ const outside=(await adminStats({membership:'active',from:'2020-01-01',to:'2020-01-01'})).body;
+ assertCounters(outside.totals,0);assert.equal(outside.playerCount,0);assert.equal(outside.onlinePlayerCount,1);assert.deepEqual(outside.daily,[]);
+ await db.subject.update({where:{id:a.owner.id},data:{membershipStatus:'inactive'}});
+ const changed=(await adminStats({membership:'active',from:oldDay,to:oldDay})).body;
+ assertCounters(changed.totals,0);assert.equal(changed.playerCount,0);assert.equal(changed.onlinePlayerCount,0);assert.equal(changed.firstCollectedAt,null);assert.equal(changed.lastCollectedAt,null);
+ assertCounters((await adminStats({from:oldDay,to:oldDay})).body.totals,10);
+});
+test('active XLSX export intersects current member, period and server filters, and records the cohort basis',async()=>{
+ await db.subject.update({where:{id:admin.subject.id},data:{membershipStatus:'inactive'}});
+ const a=await linked({displayName:'CurrentMember'}),outside=await linked({displayName:'FormerMember',membershipStatus:'inactive'}),today=koreaDate(new Date());
+ const first=new Date('2026-09-29T00:00:00Z'),last=new Date('2026-09-30T00:00:00Z');
+ await historical(a,10,{first,last});await historical(outside,200);await historical(a,999,{serverId:'survival'});await serverCollection('survival',false);
+ // Period export must take daily rows rather than the different cumulative totals.
+ await db.activityTotal.updateMany({where:{serverId:'lobby'},data:{playSeconds:9000n}});
+ const before=Date.now(),result=await exportFile({membership:'active',from:today,to:today,serverId:'lobby'}),after=Date.now();
+ const rows=excelRows(result.body),metadata=new Map(excelRows(result.body,2).slice(1));
+ assert.equal(rows.length,2);assert.equal(rows[1][0],a.owner.id);assert.equal(rows[1][6],'lobby');
+ assert.deepEqual(rows[1].slice(8,16),[10,20,30,0.04,50,60,70,0.8]);assert.deepEqual(rows[1].slice(16),[first.toISOString(),last.toISOString()]);
+ assert.equal(metadata.get('조회 대상'),'소모임 회원만');assert.match(metadata.get('회원 판정 기준'),/조회 시점의 현재 회원 상태/);assert.match(metadata.get('회원 판정 기준'),/과거 수집 당시/);
+ const asOf=Date.parse(metadata.get('회원 판정 시각 (UTC)'));assert.ok(asOf>=before&&asOf<=after);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.statistics_export'}});assert.equal(audit.details.membership,'active');assert.equal(audit.details.subjectCount,1);assert.equal(audit.details.rowCount,1);assert.ok(!JSON.stringify(audit).includes('CurrentMember'));
+ assert.equal(excelRows((await exportFile({subjectId:outside.owner.id,membership:'active'})).body).length,1);
+ await exportFile({subjectId:randomUUID(),membership:'active'},admin,404);
+ await exportFile({serverId:'survival',membership:'active'},admin,404);
+ const defaultFile=await exportFile({subjectId:outside.owner.id});assert.equal(excelRows(defaultFile.body)[1][0],outside.owner.id);assert.equal(new Map(excelRows(defaultFile.body,2).slice(1)).get('조회 대상'),'전체 사용자');
+ const allAudit=await db.auditEvent.findFirst({where:{action:'admin.statistics_export'},orderBy:{createdAt:'desc'}});assert.equal(allAudit.details.membership,'all');
+});
+test('zero active members return zero aggregates and a header-only workbook without weakening the all view',async()=>{
+ await db.subject.update({where:{id:admin.subject.id},data:{membershipStatus:'inactive'}});
+ const outsider=await linked({membershipStatus:'inactive'});await historical(outsider,5);
+ const active=(await adminStats({membership:'active'})).body;
+ assertCounters(active.totals,0);assert.equal(active.playerCount,0);assert.equal(active.onlinePlayerCount,0);assert.deepEqual(active.daily,[]);
+ assert.equal(active.firstCollectedAt,null);assert.equal(active.lastCollectedAt,null);assert.ok(active.servers.length>0);for(const row of active.servers)assertCounters(row,0);
+ const empty=await exportFile({membership:'active'});assert.equal(excelRows(empty.body).length,1);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.statistics_export'}});assert.equal(audit.details.subjectCount,0);assert.equal(audit.details.membership,'active');
+ assertCounters((await adminStats()).body.totals,5);
+});
+test('membership accepts only all or active on aggregate reads and exports; personal and reset contracts are unchanged',async()=>{
+ const a=await linked();await historical(a,2);
+ for(const membership of ['inactive','suspended','members','',1,null]){
+  await adminStats({membership},admin,400);await exportFile({membership},admin,400);
+ }
+ await adminStats({membership:['all','active']},admin,400);
+ await adminStats({membership:'active',from:'2026-01-01'},admin,400);
+ await browser(request(http).get('/v1/me/stats').query({membership:'active'}),a.portal).expect(400);
+ await browser(request(http).get(`/v1/admin/members/${a.owner.id}/stats`).query({membership:'all'})).expect(400);
+ await browser(request(http).post('/v1/admin/stats/reset/preview'),admin,true).send({scope:'all',membership:'active'}).expect(400);
+ await browser(request(http).post('/v1/admin/stats/reset'),admin,true).send({scope:'all',membership:'active',expectedRevision:'0'.repeat(64),confirmation:'test'}).expect(400);
+ const mine=(await own(a)).totals,member=(await browser(request(http).get(`/v1/admin/members/${a.owner.id}/stats`)).expect(200)).body.totals;
+ assertCounters(mine,2);assert.deepEqual(member,mine);
+ const mc=(await service(request(http).get(`/v1/minecraft/players/${a.minecraft.uuid}/stats`).query({membership:'active'})).expect(200)).body;
+ assert.deepEqual(mc.totals,mine); // The existing private MC endpoint ignores query parameters.
+});
+test('membership filter keeps admin roles, host, school freshness, session and export CSRF checks intact',async()=>{
+ const a=await linked();await historical(a,1);
+ await request(http).get('/v1/admin/stats?membership=active').set('Host','admin.example.test').expect(401);
+ await adminStats({membership:'active'},a.portal,403);
+ await service(request(http).get('/v1/admin/stats?membership=active')).expect(403);
+ const viewer=await roleSession('viewer');await adminStats({membership:'active'},viewer);await exportFile({membership:'active'},viewer,403);
+ await browser(request(http).post('/v1/admin/stats/export')).send({membership:'active'}).expect(403);
+ await exportFile({membership:'active'},a.portal,403);
+ await browser(request(http).post('/v1/admin/stats/export'),admin,true).set('Origin','https://other.example.test').send({membership:'active'}).expect(403);
+ const operator=await roleSession('operator');await exportFile({membership:'active'},operator);
+ await db.subject.update({where:{id:operator.subject.id},data:{universityVerifiedUntil:new Date(0)}});await adminStats({membership:'active'},operator,403);await exportFile({membership:'active'},operator,403);
+ await db.webSession.updateMany({where:{subjectId:admin.subject.id},data:{expiresAt:new Date(0)}});await adminStats({membership:'active'},admin,401);await exportFile({membership:'active'},admin,401);
+});

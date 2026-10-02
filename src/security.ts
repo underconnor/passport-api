@@ -64,5 +64,9 @@ const resetConfirmation = { expectedRevision: z.string().regex(/^[a-f0-9]{64}$/)
 export const statisticsResetSchema = z.discriminatedUnion('scope', [statisticsResetScopeSchema.options[0].extend(resetConfirmation), statisticsResetScopeSchema.options[1].extend(resetConfirmation), statisticsResetScopeSchema.options[2].extend(resetConfirmation)]);
 
 const statisticsDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
-export const statisticsQuerySchema = z.object({ from: statisticsDateSchema.optional(), to: statisticsDateSchema.optional() }).strict().refine(value => (!value.from && !value.to) || Boolean(value.from && value.to && value.from <= value.to && Date.parse(value.to) - Date.parse(value.from) <= 365 * 86400000));
-export const statisticsExportSchema = z.object({ from: statisticsDateSchema.optional(), to: statisticsDateSchema.optional(), serverId: serverIdSchema.optional(), subjectId: uuidSchema.optional() }).strict().refine(value => (!value.from && !value.to) || Boolean(value.from && value.to && value.from <= value.to && Date.parse(value.to) - Date.parse(value.from) <= 365 * 86400000));
+const statisticsPeriodFields = { from: statisticsDateSchema.optional(), to: statisticsDateSchema.optional() };
+const validStatisticsPeriod = (value: { from?: string; to?: string }) => (!value.from && !value.to) || Boolean(value.from && value.to && value.from <= value.to && Date.parse(value.to) - Date.parse(value.from) <= 365 * 86400000);
+const statisticsMembershipSchema = z.enum(['all', 'active']).default('all');
+export const statisticsQuerySchema = z.object(statisticsPeriodFields).strict().refine(validStatisticsPeriod);
+export const adminStatisticsQuerySchema = z.object({ ...statisticsPeriodFields, membership: statisticsMembershipSchema }).strict().refine(validStatisticsPeriod);
+export const statisticsExportSchema = z.object({ ...statisticsPeriodFields, membership: statisticsMembershipSchema, serverId: serverIdSchema.optional(), subjectId: uuidSchema.optional() }).strict().refine(validStatisticsPeriod);

@@ -5,6 +5,7 @@ import { policyTransaction, serializable } from './database';
 import { adminContext } from './admin';
 import { gameConsent, presenceDto } from './game-identity';
 import { hash } from './security';
+import { statisticsSubjectWhere, type StatisticsMembership } from './statistics-membership';
 
 export const counterNames = ['playSeconds', 'blocksBroken', 'blocksPlaced', 'damageTakenMilli', 'deaths', 'mobKills', 'playerKills', 'distanceCm'] as const;
 export type Counters = Record<typeof counterNames[number], number>;
@@ -50,19 +51,22 @@ export async function collectActivity(p: PassportService, req: Request, input: A
     return { accepted: true, duplicate: false, received, ignored };
   });
 }
-export async function statistics(p: PassportService, req: Request, kind: 'me' | 'admin' | 'member' | 'minecraft', id?: string, period: StatisticsPeriod = {}) {
+export async function statistics(p: PassportService, req: Request, kind: 'me' | 'admin' | 'member' | 'minecraft', id?: string, period: StatisticsPeriod = {}, membership: StatisticsMembership = 'all') {
   let subjectId: string | undefined;
   if (kind === 'me') subjectId = (await p.context(req, true)).session.subjectId!;
   if (kind === 'admin' || kind === 'member') { await adminContext(p, req); if (kind === 'member') { if (!await p.db.subject.findUnique({ where: { id } })) throw new NotFoundException({ code: 'subject_not_found' }); subjectId = id; } }
   if (kind === 'minecraft') { p.service(req); const identity = await p.db.minecraftIdentity.findUnique({ where: { uuid: id } }); if (!identity?.subjectId) throw new NotFoundException({ code: 'minecraft_not_linked' }); subjectId = identity.subjectId; }
   return serializable(p.db, async tx => {
+    const now = new Date();
+    const memberWhere = statisticsSubjectWhere(kind === 'admin' ? membership : 'all', now);
+    const generationWhere = subjectId ? { subjectId } : kind === 'admin' && membership === 'active' ? { subject: memberWhere } : {};
     let records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
     if (kind === 'me' || kind === 'minecraft') { const subject = await tx.subject.findUnique({ where: { id: subjectId } }); records = subject ? p.gameServers(subject, records) : []; }
     const presenceServers = records;
     const excludedServerIds = records.filter(server => !server.statisticsEnabled).map(server => server.id);
     records = records.filter(server => server.statisticsEnabled);
     const includedIds = records.map(server => server.id);
-    const where = { serverId: { in: includedIds }, ...(subjectId ? { generation: { subjectId } } : {}) };
+    const where = { serverId: { in: includedIds }, generation: generationWhere };
     const date = period.from && period.to ? { gte: new Date(period.from), lte: new Date(period.to) } : undefined;
     const grouped = date
       ? await tx.activityDaily.groupBy({ by: ['serverId'], where: { ...where, date }, _sum: sums, _min: { firstCollectedAt: true }, _max: { lastCollectedAt: true }, orderBy: { serverId: 'asc' } })
@@ -73,10 +77,11 @@ export async function statistics(p: PassportService, req: Request, kind: 'me' | 
       for (const key of counterNames) { counters[key] = counterNumber(row._sum[key]); totals[key] = counterNumber(totals[key] + counters[key]); }
       return { serverId: row.serverId, ...counters, firstCollectedAt: row._min.firstCollectedAt?.toISOString() ?? null, lastCollectedAt: row._max.lastCollectedAt?.toISOString() ?? null };
     });
-    const playerCount = subjectId ? undefined : (await tx.activityGeneration.findMany({ where: date ? { daily: { some: { serverId: { in: includedIds }, date } } } : { totals: { some: { serverId: { in: includedIds } } } }, distinct: ['subjectId'], select: { subjectId: true } })).length;
+    const playerCount = subjectId ? undefined : (await tx.activityGeneration.findMany({ where: { ...generationWhere, ...(date ? { daily: { some: { serverId: { in: includedIds }, date } } } : { totals: { some: { serverId: { in: includedIds } } } }) }, distinct: ['subjectId'], select: { subjectId: true } })).length;
     const identity = subjectId ? await tx.minecraftIdentity.findUnique({ where: { subjectId }, select: { uuid: true } }) : null;
-    const now = new Date();
-    const presences = await tx.playerPresence.findMany({ where: subjectId ? { minecraftUuid: identity?.uuid ?? '00000000-0000-0000-0000-000000000000' } : { expiresAt: { gt: now } } });
+    const memberIdentities = kind === 'admin' && membership === 'active'
+      ? await tx.minecraftIdentity.findMany({ where: { subject: memberWhere }, select: { uuid: true } }) : null;
+    const presences = await tx.playerPresence.findMany({ where: subjectId ? { minecraftUuid: identity?.uuid ?? '00000000-0000-0000-0000-000000000000' } : { expiresAt: { gt: now }, ...(memberIdentities ? { minecraftUuid: { in: memberIdentities.map(identity => identity.uuid) } } : {}) } });
     const visible = presences.filter(row => row.expiresAt > now && presenceServers.some(server => server.id === row.serverId));
     const servers = records.map(server => ({ serverId: server.id, label: server.label, collectionEnabled: true, ...(rows.find(row => row.serverId === server.id) ?? { ...emptyCounters(), firstCollectedAt: null, lastCollectedAt: null }), onlinePlayerCount: visible.filter(row => row.serverId === server.id).length }));
     const subject = subjectId ? await tx.subject.findUnique({ where: { id: subjectId } }) : null;

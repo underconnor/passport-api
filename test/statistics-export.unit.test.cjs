@@ -11,3 +11,16 @@ test('export admission bounds concurrent memory to two workbooks and releases su
  const error=new Error('synthetic workbook failure');await assert.rejects(withStatisticsExportSlot(async()=>{throw error;}),e=>e===error);
  assert.equal(await withStatisticsExportSlot(async()=> 'retry'),'retry');
 });
+
+const {statisticsQuerySchema,adminStatisticsQuerySchema,statisticsExportSchema}=require('../dist/security');
+const {statisticsSubjectWhere}=require('../dist/statistics-membership');
+test('membership scope is opt-in only for aggregate and export inputs with backward-compatible all default',()=>{
+ assert.equal(adminStatisticsQuerySchema.parse({}).membership,'all');assert.equal(statisticsExportSchema.parse({}).membership,'all');
+ for(const membership of ['all','active']){assert.equal(adminStatisticsQuerySchema.parse({membership}).membership,membership);assert.equal(statisticsExportSchema.parse({membership}).membership,membership);assert.equal(statisticsQuerySchema.safeParse({membership}).success,false);}
+ for(const membership of ['inactive','suspended','members','',null,1,['all','active']]){assert.equal(adminStatisticsQuerySchema.safeParse({membership}).success,false);assert.equal(statisticsExportSchema.safeParse({membership}).success,false);}
+});
+test('current member predicate uses the supplied shared query instant and matches the administrator member list',()=>{
+ const now=new Date('2026-10-02T00:00:00.000Z');
+ assert.deepEqual(statisticsSubjectWhere('all',now),{});
+ assert.deepEqual(statisticsSubjectWhere('active',now),{identityProvider:'usaint',membershipStatus:'active',verifiedUntil:{gt:now},accessSuspended:false});
+});

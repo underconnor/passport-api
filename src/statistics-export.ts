@@ -6,8 +6,9 @@ import { adminContext, requireAdminTransaction } from './admin';
 import { policyTransaction } from './database';
 import { verifiedStudentId } from './school-identity';
 import { counterNames, counterNumber, emptyCounters, type StatisticsPeriod } from './activity';
+import { statisticsSubjectWhere, type StatisticsMembership } from './statistics-membership';
 
-export type StatisticsExportInput = StatisticsPeriod & { serverId?: string; subjectId?: string };
+export type StatisticsExportInput = StatisticsPeriod & { membership?: StatisticsMembership; serverId?: string; subjectId?: string };
 type Cell = string | number;
 const MAX_SUBJECTS = 5000, MAX_ROWS = 50000;
 let activeExports = 0;
@@ -41,10 +42,12 @@ export async function exportStatistics(p: PassportService, req: Request, input: 
   return withStatisticsExportSlot(async () => {
   const data = await policyTransaction(p.db, async tx => {
     await requireAdminTransaction(p, tx, actor);
+    const queryNow = new Date(), membership = input.membership ?? 'all';
+    const memberWhere = statisticsSubjectWhere(membership, queryNow);
     const servers = await tx.serverRecord.findMany({ where: { statisticsEnabled: true, ...(input.serverId ? { id: input.serverId } : {}) }, orderBy: { id: 'asc' } });
     if (input.serverId && !servers.length) throw new NotFoundException({ code: 'statistics_server_not_available' });
-    const subjects = await tx.subject.findMany({ where: input.subjectId ? { id: input.subjectId } : {}, include: { minecraft: true }, orderBy: { id: 'asc' }, take: MAX_SUBJECTS + 1 });
-    if (input.subjectId && !subjects.length) throw new NotFoundException({ code: 'subject_not_found' });
+    const subjects = await tx.subject.findMany({ where: { ...memberWhere, ...(input.subjectId ? { id: input.subjectId } : {}) }, include: { minecraft: true }, orderBy: { id: 'asc' }, take: MAX_SUBJECTS + 1 });
+    if (input.subjectId && !subjects.length && !await tx.subject.findUnique({ where: { id: input.subjectId }, select: { id: true } })) throw new NotFoundException({ code: 'subject_not_found' });
     if (subjects.length > MAX_SUBJECTS || subjects.length * servers.length > MAX_ROWS) throw new ConflictException({ code: 'statistics_export_too_large' });
     const where = { serverId: { in: servers.map(server => server.id) }, generation: { subjectId: { in: subjects.map(subject => subject.id) } } };
     const source = input.from && input.to
@@ -66,8 +69,8 @@ export async function exportStatistics(p: PassportService, req: Request, input: 
       rows.push([subject.id, verifiedStudentId(subject, p.config.encryptionKey) ?? '', subject.displayName, subject.minecraft?.uuid ?? '', subject.minecraft?.name ?? '', subject.discordId ?? '', server.id, server.label, value.playSeconds, value.blocksBroken, value.blocksPlaced, value.damageTakenMilli / 1000, value.deaths, value.mobKills, value.playerKills, value.distanceCm / 100, value.first ?? '', value.last ?? '']);
     }
     const history = await tx.statisticsHistory.findUnique({ where: { id: 'main' } });
-    const metadata: Cell[][] = [['항목', '값'], ['생성 시각 (UTC)', new Date().toISOString()], ['조회 시작일 (한국)', input.from ?? '누적 전체'], ['조회 종료일 (한국)', input.to ?? '누적 전체'], ['기간별 기록 시작 (UTC)', history?.availableFrom.toISOString() ?? ''], ['일별 기준', '서버가 통계 배치를 수신한 한국 날짜. 지연 전송은 수신일에 합산됩니다.'], ['기존 기록', '기간별 기록 시작 이전 통계는 누적 조회에만 포함됩니다.'], ['학번 공란', '학교 로그인에서 확인하여 저장한 전체 학번이 없는 계정'], ['대상', '수집이 켜진 서버만 포함. 기록이 없는 사용자와 서버는 0으로 표시.']];
-    await tx.auditEvent.create({ data: { action: 'admin.statistics_export', actorSubjectId: actor.session.subjectId, details: { rowCount: rows.length - 1, subjectCount: subjects.length, serverCount: servers.length, ...input } } });
+    const metadata: Cell[][] = [['항목', '값'], ['생성 시각 (UTC)', new Date().toISOString()], ['조회 대상', membership === 'active' ? '소모임 회원만' : '전체 사용자'], ['회원 판정 기준', '조회 시점의 현재 회원 상태. 학교 인증 제공자 usaint, membershipStatus active, 회원 유효기간 미만료, 접근 정지 아님. 과거 수집 당시의 신분을 재구성하지 않습니다.'], ['회원 판정 시각 (UTC)', queryNow.toISOString()], ['조회 시작일 (한국)', input.from ?? '누적 전체'], ['조회 종료일 (한국)', input.to ?? '누적 전체'], ['기간별 기록 시작 (UTC)', history?.availableFrom.toISOString() ?? ''], ['일별 기준', '서버가 통계 배치를 수신한 한국 날짜. 지연 전송은 수신일에 합산됩니다.'], ['기존 기록', '기간별 기록 시작 이전 통계는 누적 조회에만 포함됩니다.'], ['학번 공란', '학교 로그인에서 확인하여 저장한 전체 학번이 없는 계정'], ['대상', '수집이 켜진 서버만 포함. 기록이 없는 사용자와 서버는 0으로 표시.']];
+    await tx.auditEvent.create({ data: { action: 'admin.statistics_export', actorSubjectId: actor.session.subjectId, details: { rowCount: rows.length - 1, subjectCount: subjects.length, serverCount: servers.length, ...input, membership } } });
     return { rows, metadata };
   });
   return statisticsWorkbook(data.rows, data.metadata);

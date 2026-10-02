@@ -15,7 +15,7 @@ import { memberQuerySchema, deleteMemberSchema, playerQuerySchema, presenceSchem
 import { playerLookup, reportPresence, renewPrivacyConsent } from './game-identity';
 import { collectActivity, statistics } from './activity';
 import { previewStatisticsReset, resetStatistics } from './statistics-controls';
-import { statisticsQuerySchema, statisticsExportSchema, statisticsResetSchema, statisticsResetScopeSchema } from './security';
+import { statisticsQuerySchema, adminStatisticsQuerySchema, statisticsExportSchema, statisticsResetSchema, statisticsResetScopeSchema } from './security';
 import { exportStatistics } from './statistics-export';
 import { adminObservability, observedOperation } from './observability';
 import { getManual, adminManual, updateManual, manualSettingsSchema } from './manual';
@@ -102,7 +102,7 @@ class PassportController {
   @Post('v1/admin/stats/reset/preview') @HttpCode(200) previewStatisticsReset(@Req() req: Request, @Body() body: unknown) { return previewStatisticsReset(this.passport, req, parse(statisticsResetScopeSchema, body)); }
   @Post('v1/admin/stats/reset') @HttpCode(200) resetStatistics(@Req() req: Request, @Body() body: unknown) { return resetStatistics(this.passport, req, parse(statisticsResetSchema, body)); }
   @Get('v1/me/stats') myStats(@Req() req: Request, @Query() query: unknown) { return statistics(this.passport, req, 'me', undefined, parse(statisticsQuerySchema, query)); }
-  @Get('v1/admin/stats') adminStats(@Req() req: Request, @Query() query: unknown) { return statistics(this.passport, req, 'admin', undefined, parse(statisticsQuerySchema, query)); }
+  @Get('v1/admin/stats') adminStats(@Req() req: Request, @Query() query: unknown) { const { membership, ...period } = parse(adminStatisticsQuerySchema, query); return statistics(this.passport, req, 'admin', undefined, period, membership); }
   @Get('v1/admin/members/:id/stats') memberStats(@Req() req: Request, @Param('id') id: string, @Query() query: unknown) { return statistics(this.passport, req, 'member', parse(uuidSchema, id), parse(statisticsQuerySchema, query)); }
   @Post('v1/admin/stats/export') @HttpCode(200) async exportStatistics(@Req() req: Request, @Res() res: Response, @Body() body: unknown) { const result = await exportStatistics(this.passport, req, parse(statisticsExportSchema, body)); res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="passport-statistics.xlsx"'); res.setHeader('Cache-Control', 'private, no-store'); res.send(result); }
   @Get('v1/manual') manual() { return getManual(this.passport); }

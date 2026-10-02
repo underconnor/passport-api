@@ -102,3 +102,7 @@ Discord 역할·닉네임 v2와 관리자 설정·수동 재조정, 현재 동�
 
 
 통계 GET은 `from/to` 한국 날짜를 받아 배포 이후 수집일 기준 기간 집계를 제공한다. 기존 누적 기록에 날짜를 추정해 넣지 않는다. `POST /v1/admin/stats/export`는 owner/operator의 관리자 세션·CSRF를 확인한 후 사용자 ID, 전체 학번, 이름, 게임·Discord ID와 서버별 8개 통계를 XLSX로 내려준다. 기간/서버/사용자 필터를 지원하며 모든 식별자는 문자열로 보관한다. 개인 통계 초기화는 제공하지 않는다.
+
+관리자 전체 통계 `GET /v1/admin/stats`와 XLSX `POST /v1/admin/stats/export`만 `membership=all|active`를 받으며 생략 시 `all`이다. `active`는 조회 시점에 `identityProvider=usaint`, `membershipStatus=active`, `verifiedUntil>queryNow`, `accessSuspended=false`인 현재 소모임 회원이다. 과거 기간을 조회해도 현재 회원 기준으로 선별하며, 당시 회원 신분을 추정하지 않는다. 8개 지표·서버별 합계·playerCount·daily·최초/최근 수집 시각과 현재 접속 인원에 같은 회원 조건을 사용한다. 기존 presence는 수집 설정과 별개이므로 현재 접속 인원의 서버 범위는 유지한다. 수집이 꺼진 서버의 통계 지표·목록·XLSX는 기존처럼 제외하고 전역 `period.availableFrom`은 변경하지 않는다.
+
+개인 `/v1/me/stats`와 `/v1/admin/members/:id/stats`는 membership 필드를 400으로 거절하며 범위를 변경하지 않는다. Minecraft 개인 통계는 기존대로 query를 무시하며 이 필터를 적용하지 않는다. reset API에도 membership을 추가하지 않는다. XLSX는 현재 회원 범위와 기존 기간/서버/사용자 필터의 교집합을 사용한다. 존재하는 비회원 subjectId와 active 조합은 헤더만 있는 빈 XLSX를 반환하고, 존재하지 않는 subjectId는 기존 404이다. 내보내기 정보에 조회 대상·현재 회원 판정 기준·판정 시각(UTC)을 기록하고 감사에도 기본값을 포함한 membership을 남긴다.
