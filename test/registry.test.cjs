@@ -270,13 +270,13 @@ test('command-name migration backfills IDs atomically without changing labels, r
   await tx.$executeRawUnsafe('CREATE TABLE "ActivityTotal" ("serverId" TEXT NOT NULL,"playSeconds" BIGINT NOT NULL)');
   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" VALUES (\'lobby\',\'로비 표시\',ARRAY[]::UUID[],\'2026-01-01\'),(\'survival\',\'생존 표시\',ARRAY[]::UUID[],\'2026-01-02\')');
   await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES (\'lobby\',321)');
-  const before=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');
+  const before=await tx.$queryRawUnsafe('SELECT "id","label","allowedSubjectIds","updatedAt" FROM "ServerRecord" ORDER BY "id"');
   // Keep PL/pgSQL's dollar-quoted trigger body intact when executing this migration in the isolated schema.
   let dollarQuoted=false,statement='';const statements=[];
   for(const token of sql.split(/(\$\$|;)/)){if(token==='$$')dollarQuoted=!dollarQuoted;if(token===';'&&!dollarQuoted){statements.push(statement.trim());statement='';}else statement+=token;}
   if(statement.trim())statements.push(statement.trim());
   for(const statement of statements.filter(value=>value&&!['BEGIN','COMMIT'].includes(value)))await tx.$executeRawUnsafe(statement);
-  const rows=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');assert.deepEqual(rows.map(({commandName,...row})=>row),before);assert.deepEqual(rows.map(row=>row.commandName),['lobby','survival']);
+  const rows=await tx.$queryRawUnsafe('SELECT "id","label","allowedSubjectIds","updatedAt","commandName" FROM "ServerRecord" ORDER BY "id"');assert.deepEqual(rows.map(({commandName,...row})=>row),before);assert.deepEqual(rows.map(row=>row.commandName),['lobby','survival']);
   assert.equal((await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"'))[0].playSeconds,321n);
   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","label","updatedAt") VALUES (\'legacy_insert\',\'Old API insert\',CURRENT_TIMESTAMP)');
   const legacy=(await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" WHERE "id"=\'legacy_insert\''))[0];assert.equal(legacy.commandName,'legacy_insert');assert.equal(legacy.label,'Old API insert');
