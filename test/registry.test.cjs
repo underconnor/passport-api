@@ -371,7 +371,7 @@ test('Discord link and unlink atomically publish policy invalidation and rotate 
   const after=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(after.policyVersion,before.policyVersion+1);assert.equal(after.policyFingerprint,'');assert.notEqual(after.telemetryEpoch,before.telemetryEpoch);
   assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
   const event=await db.policyEvent.findFirst({where:{minecraftUuid:identity.uuid},orderBy:{id:'desc'}});assert.equal(event.policyVersion,after.policyVersion);
-  const result=await policy(identity);assert.equal(result.policyVersion,after.policyVersion);assert.equal(result.telemetry.epoch,after.telemetryEpoch);
+  const result=await policy(identity);assert.equal(result.discordLinked,linked);assert.equal(result.policyVersion,after.policyVersion);assert.equal(result.telemetry.epoch,after.telemetryEpoch);
   assert.equal((await activityFor(after,'campus_any',before.telemetryEpoch)).received,0);assert.equal((await activityFor(after,'campus_any')).received,1);
  }
  const receipts=await db.consentReceipt.count({where:{subjectId:owner.id,source:'discord_link'}});assert.equal(receipts,2);
@@ -488,4 +488,23 @@ test('members migration preserves selected settings, subject overrides, telemetr
    await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
   },{timeout:30000});
  }
+});
+
+test('policy Discord-linked signal is false without a Minecraft subject or with only a legacy ID and is fingerprinted independently of server access',async()=>{
+ const uuid=randomUUID(),anonymous=await policy({uuid});assert.equal(anonymous.status,'unlinked');assert.equal(anonymous.discordLinked,false);
+ const legacyId='200000000000000031',actualId='200000000000000032',owner=await subject({discordId:legacyId,discordUpdatedAt:new Date()});
+ await db.minecraftIdentity.update({where:{uuid},data:{subjectId:owner.id}});
+ const before=await policy({uuid});assert.equal(before.discordLinked,false);assert.deepEqual(before.allowedServerIds,['lobby','survival']);assert.ok(!JSON.stringify(before).includes(legacyId));
+ const stored=await db.minecraftIdentity.findUnique({where:{uuid}}),events=await db.policyEvent.count({where:{minecraftUuid:uuid}});
+ // A fixture relation change bypasses the normal link event to verify fingerprint detection itself.
+ await db.discordIdentity.create({data:{discordUserId:actualId,guildId:process.env.DISCORD_GUILD_ID,username:'synthetic_policy',displayName:'Synthetic',subjectId:owner.id,verifiedAt:new Date()}});
+ const linked=await policy({uuid});assert.equal(linked.discordLinked,true);assert.deepEqual(linked.allowedServerIds,before.allowedServerIds);assert.equal(linked.policyVersion,before.policyVersion+1);
+ assert.ok(!JSON.stringify(linked).includes(actualId));assert.equal(await db.policyEvent.count({where:{minecraftUuid:uuid}}),events+1);
+ assert.equal((await db.minecraftIdentity.findUnique({where:{uuid}})).telemetryEpoch,stored.telemetryEpoch);
+ assert.ok(Date.parse(linked.expiresAt)>Date.parse(linked.issuedAt));assert.ok(Date.parse(linked.expiresAt)-Date.parse(linked.issuedAt)<=60000);
+ assert.equal((await policy({uuid})).policyVersion,linked.policyVersion);assert.equal(await db.policyEvent.count({where:{minecraftUuid:uuid}}),events+1);
+ assert.equal((await policy({uuid:randomUUID()})).discordLinked,false);
+ await db.subject.update({where:{id:owner.id},data:{accessSuspended:true}});const denied=await policy({uuid});assert.equal(denied.status,'suspended');assert.equal(denied.discordLinked,true);
+ await db.discordIdentity.update({where:{discordUserId:actualId},data:{subjectId:null}});
+ const unlinked=await policy({uuid});assert.equal(unlinked.discordLinked,false);assert.equal(unlinked.policyVersion,denied.policyVersion+1);assert.deepEqual(unlinked.allowedServerIds,denied.allowedServerIds);
 });

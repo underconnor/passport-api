@@ -3,6 +3,11 @@ import type { DiscordIdentity, DiscordRoleState, Prisma, Subject, DiscordGuildSe
 import { privacyNotice } from './privacy';
 import { universityName } from './integrations/usaint';
 
+/** Verified account relationship only; legacy user-entered IDs are not proof. */
+export function hasLinkedDiscordIdentity(subject: { id: string; discordIdentity: { subjectId: string | null } | null } | null | undefined) {
+  return Boolean(subject && subject.discordIdentity?.subjectId === subject.id);
+}
+
 export function discordEntitlement(subject: Subject | null, now = new Date()) {
   const validUntil = subject?.universityVerifiedUntil ?? null;
   return { desired: Boolean(subject && subject.identityProvider === 'usaint' && !subject.accessSuspended && subject.membershipStatus !== 'suspended' && validUntil && validUntil > now), validUntil };

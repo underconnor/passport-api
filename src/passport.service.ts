@@ -14,7 +14,7 @@ import { startMembershipSync } from './membership-sync';
 import { permittedServers, seedServerRegistry, ScopeSubject } from './registry';
 import { ConsentInput, privacyNotice, recordConsent, requireConsent } from './privacy';
 import { minecraftSkin } from './integrations/minecraft-skin';
-import { discordProfile, refreshDiscordSubject } from './discord-policy';
+import { discordProfile, refreshDiscordSubject, hasLinkedDiscordIdentity } from './discord-policy';
 import { seedDiscordSettings } from './discord-management';
 import { verifiedStudentId } from './school-identity';
 import { migrateSchoolVerificationExpiry } from './school-expiry';
@@ -266,6 +266,7 @@ export class PassportService {
       const now = new Date();
       const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true, discordIdentity: { select: { subjectId: true } } } } } });
       const subject = identity.subject;
+      const discordLinked = hasLinkedDiscordIdentity(subject);
       const memberStatus = subject ? this.accessStatus(subject, now) : 'unlinked';
       const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
       const allowedServers = subject ? this.gameServers(subject, records, now) : [];
@@ -279,7 +280,7 @@ export class PassportService {
       const telemetryEnabled = presenceEnabled;
       const telemetry = { enabled: telemetryEnabled, epoch: telemetryEnabled ? identity.telemetryEpoch : null, presenceEnabled, serverIds: telemetryEnabled ? allowedServers.filter(server => server.statisticsEnabled).map(server => server.id) : [] };
       const serverChoices = allowedServers.map(({ id, commandName, label }) => ({ id, commandName, label }));
-      const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
+      const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, discordLinked, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));
       let policyVersion = identity.policyVersion;
       if (identity.policyFingerprint !== fingerprint) {
         const changed = await tx.minecraftIdentity.update({ where: { uuid }, data: { policyFingerprint: fingerprint, ...(identity.policyFingerprint ? { policyVersion: { increment: 1 } } : {}) } });
@@ -289,7 +290,7 @@ export class PassportService {
       const expires = status === 'active' ? Math.min(now.getTime() + 60000,
         allowedServers.some(server => server.accessMode === 'members') || display.member || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
         subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
-      return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, allowedServers: serverChoices, display, administrator, telemetry, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(administrator ? Math.min(expires, subject!.universityVerifiedUntil!.getTime()) : expires).toISOString() };
+      return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, discordLinked, status, allowedServerIds, allowedServers: serverChoices, display, administrator, telemetry, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(administrator ? Math.min(expires, subject!.universityVerifiedUntil!.getTime()) : expires).toISOString() };
     });
   }
   async policyEvents(req: Request, after?: string) {

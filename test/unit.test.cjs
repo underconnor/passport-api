@@ -120,3 +120,11 @@ test('members mode ignores legacy roster server lists and public settings reject
  for(const accessMode of ['members','selected','university'])assert.equal(serverSettingsSchema.safeParse({...original,accessMode}).success,true);
  assert.equal(serverSettingsSchema.safeParse({...original,accessMode:'roster'}).success,false);
 });
+
+test('Discord-linked signal requires the actual matching relationship, never a legacy reference or role status',()=>{
+ const {hasLinkedDiscordIdentity}=require('../dist/discord-policy');
+ for(const subject of [null,undefined,{id:'subject',discordIdentity:null,discordId:'200000000000000001'},{id:'subject',discordIdentity:{subjectId:null}},{id:'subject',discordIdentity:{subjectId:'other'}}])assert.equal(hasLinkedDiscordIdentity(subject),false);
+ const linked={id:'subject',discordIdentity:{subjectId:'subject'}};
+ assert.equal(hasLinkedDiscordIdentity(linked),true);
+ assert.equal(hasLinkedDiscordIdentity({...linked,membershipStatus:'inactive',universityVerifiedUntil:new Date(0),accessSuspended:true}),true);
+});

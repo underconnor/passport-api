@@ -58,6 +58,8 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 정책은 `status=active`이며 해당 서버가 allowedServerIds에 있고 lease가 유효한 경우에만 허용합니다. 여기서 active는 허용 서버가 하나 이상인 게임 권한 상태이며 `/me.membership.effectiveStatus`의 소모임 회원 상태와 구분합니다. 빈 허용 범위는 active로 반환하지 않습니다. lease는 최대60초와 학교 인증 유효기간(한국 시간 기준 다음 3월 1일 또는 9월 1일 00:00 직전까지) 중 먼저 만료되는 시점에서 잘리고, 허용 범위에 회원 전용 서버가 있거나 회원 prefix를 내보내면 명부 freshness도 적용합니다. 학교 전체(`university`) 서버만 허용되고 회원 prefix가 없으면 명부 TTL은 사용하지 않습니다. 비회원 또는 명부가 만료된 사용자의 회원 roleLabel은 비웁니다. 해당 UUID에서 policyVersion을 보존하고 권한 변화 시 증가시킵니다. API 장애를 허용으로 변환하지 않습니다. 정지의 실제 전파 시간은 현재 소비자의 polling 주기에 달리며 5초 목표를 달성했다는 뜻이 아닙니다.
 
+정책의 최상위 `discordLinked`는 현재 학교 계정에 실제 `DiscordIdentity.subjectId`가 연결되어 있는지를 나타내는 boolean입니다. 학교 계정이 연결되지 않은 Minecraft UUID, 실제 관계가 없는 사용자, 과거 직접 입력한 Discord ID만 있는 사용자는 false입니다. 회원·학교 인증 만료나 Discord 역할 동기화 상태가 실제 연결을 해제하지는 않으므로 해당 값은 접속 허가와 별개입니다. Discord 계정 ID나 초대 주소는 정책에 포함하지 않습니다. 이 값은 정책 fingerprint에 포함되며 기존 연동·해제의 원자적인 버전 증가·outbox 처리를 유지합니다. 프록시는 false인 사용자에게 접속 안내를 제공할 수 있습니다.
+
 ## 환경 변수
 
 | 변수 | 의미 |

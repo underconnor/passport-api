@@ -6,6 +6,7 @@ import type { ServerDefinition } from './config';
 import type { PassportService } from './passport.service';
 import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
 import { policyTransaction } from './database';
+import { hasLinkedDiscordIdentity } from './discord-policy';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
 export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
@@ -18,7 +19,7 @@ export function permittedServers(subject: ScopeSubject, servers: ServerRecord[],
   const university = subject.identityProvider === 'usaint' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now);
   const development = allowDevelopment && subject.identityProvider === 'development';
   if (subject.accessSuspended || subject.membershipStatus === 'suspended' || (!university && !development)) return [];
-  const discordLinked = subject.discordIdentity?.subjectId === subject.id;
+  const discordLinked = hasLinkedDiscordIdentity(subject);
   const member = subject.membershipStatus === 'active' && subject.verifiedUntil > now;
   return servers.filter(server => server.enabled
     && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && subject.discordIdentity === null))
