@@ -1,3 +1,4 @@
+import { managedGameActive, type ManagedGameSubject, managedDevelopmentProvider } from './managed-development';
 import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { PrismaClient, ServerRecord, Subject } from '@prisma/client';
@@ -10,19 +11,20 @@ import { hasLinkedDiscordIdentity } from './discord-policy';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
 export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
-export type ScopeSubject = Pick<Subject, 'id' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & { discordIdentity: { subjectId: string | null } | null };
+export type ScopeSubject = Pick<Subject, 'id' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & ManagedGameSubject & { discordIdentity: { subjectId: string | null } | null };
 type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
 
 /** This is shared by policy, portal listings and the administrator's eligibility view. */
 export function permittedServers(subject: ScopeSubject, servers: ServerRecord[], { now = new Date(), allowDevelopment = false, applyPersonalLimit = true }: ScopeOptions = {}) {
-  const university = subject.identityProvider === 'usaint' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now);
+  const managed = managedGameActive(subject);
+  const university = managed || subject.identityProvider === 'usaint' && Boolean(subject.universityVerifiedUntil && subject.universityVerifiedUntil > now);
   const development = allowDevelopment && subject.identityProvider === 'development';
   if (subject.accessSuspended || subject.membershipStatus === 'suspended' || (!university && !development)) return [];
-  const discordLinked = hasLinkedDiscordIdentity(subject);
+  const discordLinked = managed ? subject.developmentAccount!.discordLinked : hasLinkedDiscordIdentity(subject);
   const member = subject.membershipStatus === 'active' && subject.verifiedUntil > now;
   return servers.filter(server => server.enabled
-    && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && subject.discordIdentity === null))
+    && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && (managed ? !discordLinked : subject.discordIdentity === null)))
       : server.accessMode === 'selected' ? university && server.allowedSubjectIds.includes(subject.id)
         : member && server.accessMode === 'members')
     && (!applyPersonalLimit || !subject.scopeRestricted || subject.scopeLimit.includes(server.id)));
@@ -71,7 +73,7 @@ export async function setServerSettings(p: PassportService, req: Request, id: st
     const previous = await tx.serverRecord.findUnique({ where: { id } });
     if (!previous) throw new NotFoundException({ code: 'server_not_found' });
     if (previous.updatedAt.getTime() !== new Date(input.expectedUpdatedAt).getTime()) throw new ConflictException({ code: 'server_changed' });
-    if (input.allowedSubjectIds.length && await tx.subject.count({ where: { id: { in: input.allowedSubjectIds }, identityProvider: 'usaint' } }) !== input.allowedSubjectIds.length) throw new ForbiddenException({ code: 'invalid_selected_subjects' });
+    if (input.allowedSubjectIds.length && await tx.subject.count({ where: { id: { in: input.allowedSubjectIds }, OR: [{ identityProvider: 'usaint' }, { identityProvider: managedDevelopmentProvider, developmentAccount: { isNot: null } }] } }) !== input.allowedSubjectIds.length) throw new ForbiddenException({ code: 'invalid_selected_subjects' });
     const { expectedUpdatedAt: _expected, ...requested } = input;
     const settings = { ...requested, commandName: input.commandName ?? previous.commandName, discordRequirement: input.accessMode === 'university' ? input.discordRequirement ?? previous.discordRequirement : 'any' };
     // Keep command names unique across both administrator names and legacy immutable IDs.

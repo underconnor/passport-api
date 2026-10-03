@@ -1,3 +1,4 @@
+import { managedGameActive, managedDevelopmentProvider } from './managed-development';
 import { hasServiceCredential } from './service-credentials';
 import { gameAdministrator } from './admin-permissions';
 import { randomUUID } from 'node:crypto';
@@ -264,9 +265,9 @@ export class PassportService {
     this.service(req);
     return policyTransaction(this.db, async tx => {
       const now = new Date();
-      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true, discordIdentity: { select: { subjectId: true } } } } } });
+      const identity = await tx.minecraftIdentity.upsert({ where: { uuid }, update: {}, create: { uuid, name: '' }, include: { subject: { include: { administrator: true, developmentAccount: true, discordIdentity: { select: { subjectId: true } } } } } });
       const subject = identity.subject;
-      const discordLinked = hasLinkedDiscordIdentity(subject);
+      const discordLinked = managedGameActive(subject) ? subject!.developmentAccount!.discordLinked : hasLinkedDiscordIdentity(subject);
       const memberStatus = subject ? this.accessStatus(subject, now) : 'unlinked';
       const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
       const allowedServers = subject ? this.gameServers(subject, records, now) : [];
@@ -277,7 +278,7 @@ export class PassportService {
       const display = { roleLabel: status === 'active' && memberStatus === 'active' ? subject!.roleLabel.slice(0, 24) : '', displayName: consent && subject && status === 'active' ? gameName(subject.displayName).slice(0, 40) : '', member: consent && status === 'active' && memberStatus === 'active', admissionYear: consent && status === 'active' ? subject?.admissionYear ?? null : null };
       const administrator = Boolean(subject && schoolActive(subject, now) && gameAdministrator(subject.administrator));
       const presenceEnabled = consent && status === 'active';
-      const telemetryEnabled = presenceEnabled;
+      const telemetryEnabled = presenceEnabled && subject?.identityProvider !== managedDevelopmentProvider;
       const telemetry = { enabled: telemetryEnabled, epoch: telemetryEnabled ? identity.telemetryEpoch : null, presenceEnabled, serverIds: telemetryEnabled ? allowedServers.filter(server => server.statisticsEnabled).map(server => server.id) : [] };
       const serverChoices = allowedServers.map(({ id, commandName, label }) => ({ id, commandName, label }));
       const fingerprint = hash(JSON.stringify({ subjectId: subject?.id ?? null, discordLinked, status, allowedServerIds, display, administrator, telemetry, allowedServers: serverChoices }));

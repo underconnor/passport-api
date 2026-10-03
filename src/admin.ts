@@ -1,3 +1,4 @@
+import { managedDevelopmentProvider } from './managed-development';
 import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -111,12 +112,13 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
     await requireAdminTransaction(p, tx, actor);
     await protectAdministratorTarget(tx, actor.session.subjectId!, id);
     if (actor.session.subjectId === id && input.suspended) throw new ConflictException({ code: 'self_admin_change_forbidden' });
-    const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true, discordIdentity: { select: { subjectId: true } } } });
-    if (!current || current.identityProvider !== 'usaint') throw new NotFoundException({ code: 'subject_not_found' });
+    const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true, developmentAccount: true, discordIdentity: { select: { subjectId: true } } } });
+    if (!current || (current.identityProvider !== 'usaint' && !(current.identityProvider === managedDevelopmentProvider && current.developmentAccount))) throw new NotFoundException({ code: 'subject_not_found' });
     const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
-    const eligible = p.gameServers({ ...current, accessSuspended: false }, records, new Date(), false).map(server => server.id);
+    const eligible = p.gameServers({ ...current, accessSuspended: false, developmentAccount: current.developmentAccount ? { ...current.developmentAccount, enabled: true } : null }, records, new Date(), false).map(server => server.id);
     if (input.serverIds.some(serverId => !eligible.includes(serverId))) throw new ForbiddenException({ code: 'invalid_server_scope' });
     await tx.subject.update({ where: { id }, data: { accessSuspended: input.suspended, scopeRestricted: input.restricted, scopeLimit: input.restricted ? input.serverIds : [] } });
+    if (current.developmentAccount) await tx.developmentMinecraftAccount.update({ where: { subjectId: id }, data: { enabled: !input.suspended, revision: { increment: 1 } } });
     await refreshDiscordSubject(tx, id);
     if (current.minecraft) {
       const changed = await tx.minecraftIdentity.update({ where: { uuid: current.minecraft.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
@@ -131,6 +133,7 @@ export async function unlinkMember(p: PassportService, req: Request, id: string)
   return policyTransaction(p.db, async tx => {
     await requireAdminTransaction(p, tx, actor);
     await protectAdministratorTarget(tx, actor.session.subjectId!, id);
+    if (await tx.developmentMinecraftAccount.findUnique({ where: { subjectId: id } })) throw new ConflictException({ code: 'development_account_managed_separately' });
     const minecraft = await tx.minecraftIdentity.findUnique({ where: { subjectId: id } });
     if (!minecraft) throw new NotFoundException({ code: 'minecraft_not_linked' });
     const changed = await tx.minecraftIdentity.update({ where: { uuid: minecraft.uuid }, data: { subjectId: null, telemetryEpoch: randomUUID(), policyVersion: { increment: 1 }, policyFingerprint: '' } });

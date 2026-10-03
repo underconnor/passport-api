@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { developmentAccounts, createDevelopmentAccount, updateDevelopmentAccount, deleteDevelopmentAccount, createDevelopmentAccountSchema, updateDevelopmentAccountSchema, deleteDevelopmentAccountSchema } from './development-accounts';
 import { authorizeServiceCredential, listCredentials, createCredential, revokeCredential, credentialSchema } from './service-credentials';
 import { Body, Controller, Delete, Get, HttpCode, HttpException, Module, Param, Post, Put, Query, Req, Res, ServiceUnavailableException } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -93,6 +94,10 @@ class PassportController {
   @Put('v1/admin/operators/:id') changeOperator(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return changeOperator(this.passport, req, parse(uuidSchema, id), parse(operatorRoleSchema, body).role); }
   @Delete('v1/admin/operators/:id') revokeOperator(@Req() req: Request, @Param('id') id: string) { return changeOperator(this.passport, req, parse(uuidSchema, id), null); }
   @Get('v1/admin/overview') admin(@Req() req: Request) { return adminOverview(this.passport, req); }
+  @Get('v1/admin/development-accounts') developmentAccounts(@Req() req: Request) { return developmentAccounts(this.passport, req); }
+  @Post('v1/admin/development-accounts') @HttpCode(201) createDevelopmentAccount(@Req() req: Request, @Body() body: unknown) { return createDevelopmentAccount(this.passport, req, parse(createDevelopmentAccountSchema, body)); }
+  @Put('v1/admin/development-accounts/:id') updateDevelopmentAccount(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return updateDevelopmentAccount(this.passport, req, parse(uuidSchema, id), parse(updateDevelopmentAccountSchema, body)); }
+  @Delete('v1/admin/development-accounts/:id') deleteDevelopmentAccount(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return deleteDevelopmentAccount(this.passport, req, parse(uuidSchema, id), parse(deleteDevelopmentAccountSchema, body)); }
   @Get('v1/admin/members') members(@Req() req: Request, @Query() query: unknown) { return adminMembers(this.passport, req, parse(memberQuerySchema, query)); }
   @Delete('v1/admin/members/:id') deleteMember(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) { return deleteMember(this.passport, req, parse(uuidSchema, id), parse(deleteMemberSchema, body)); }
   @Get('v1/minecraft/players') players(@Req() req: Request, @Query() query: unknown) { return playerLookup(this.passport, req, parse(playerQuerySchema, query).query); }

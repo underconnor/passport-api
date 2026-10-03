@@ -1,3 +1,4 @@
+import { managedGameActive } from './managed-development';
 import { gameAdministrator } from './admin-permissions';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { Prisma, Subject, PlayerPresence } from '@prisma/client';
@@ -10,6 +11,8 @@ import { refreshDiscordSubject } from './discord-policy';
 import { universityName } from './integrations/usaint';
 
 export async function gameConsent(tx: Prisma.TransactionClient, subjectId: string) {
+  const managed = await tx.developmentMinecraftAccount.findUnique({ where: { subjectId }, include: { subject: { select: { identityProvider: true, accessSuspended: true, membershipStatus: true } } } });
+  if (managed) return managedGameActive({ ...managed.subject, developmentAccount: managed });
   return Boolean(await tx.consentReceipt.findFirst({ where: { subjectId, version: { in: ['2026-10-01.4', privacyNotice.version] } }, select: { id: true } }));
 }
 export function gameName(name: string) { try { return universityName(name, false); } catch { return ''; } }
@@ -33,13 +36,13 @@ export async function playerLookup(p: PassportService, req: Request, query: stri
   p.service(req);
   const contains = { contains: query, mode: 'insensitive' as const };
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query);
-  const identities = await p.db.minecraftIdentity.findMany({ where: { subjectId: { not: null }, OR: [{ name: contains }, { subject: { displayName: contains } }, ...(isUuid ? [{ uuid: query.toLowerCase() }] : [])] }, include: { subject: { include: { administrator: true } } }, orderBy: [{ name: 'asc' }, { uuid: 'asc' }], take: 20 });
+  const identities = await p.db.minecraftIdentity.findMany({ where: { subjectId: { not: null }, OR: [{ name: contains }, { subject: { displayName: contains } }, ...(isUuid ? [{ uuid: query.toLowerCase() }] : [])] }, include: { subject: { include: { administrator: true, developmentAccount: true } } }, orderBy: [{ name: 'asc' }, { uuid: 'asc' }], take: 20 });
   const now = new Date();
   const players = await Promise.all(identities.map(async identity => {
-    const subject = identity.subject!, consent = await gameConsent(p.db, subject.id), active = schoolActive(subject, now);
+    const subject = identity.subject!, consent = await gameConsent(p.db, subject.id), active = schoolActive(subject, now) || managedGameActive(subject);
     const presence = await p.db.playerPresence.findUnique({ where: { minecraftUuid: identity.uuid } });
     const online = Boolean(presence && presence.expiresAt > now);
-    return { minecraftUuid: identity.uuid, minecraftName: identity.name, displayName: consent && active ? gameName(subject.displayName) : '', member: consent && active && subject.membershipStatus === 'active' && subject.verifiedUntil > now, admissionYear: consent && active ? subject.admissionYear : null, administrator: Boolean(active && gameAdministrator(subject.administrator)), online, serverId: online ? presence!.serverId : null, lastSeenAt: presence?.observedAt.toISOString() ?? null };
+    return { minecraftUuid: identity.uuid, minecraftName: identity.name, displayName: consent && active ? gameName(subject.displayName) : '', member: consent && active && subject.membershipStatus === 'active' && subject.verifiedUntil > now, admissionYear: consent && active ? subject.admissionYear : null, administrator: Boolean(schoolActive(subject, now) && gameAdministrator(subject.administrator)), online, serverId: online ? presence!.serverId : null, lastSeenAt: presence?.observedAt.toISOString() ?? null };
   }));
   return { players };
 }
@@ -51,7 +54,7 @@ export async function reportPresence(p: PassportService, req: Request, input: { 
   return policyTransaction(p.db, async tx => {
     const server = await tx.serverRecord.findUnique({ where: { id: input.serverId } });
     if (!server?.enabled) throw new ForbiddenException({ code: 'server_not_enabled' });
-    const identities = await tx.minecraftIdentity.findMany({ where: { uuid: { in: input.players }, subjectId: { not: null } }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
+    const identities = await tx.minecraftIdentity.findMany({ where: { uuid: { in: input.players }, subjectId: { not: null } }, include: { subject: { include: { developmentAccount: true, discordIdentity: { select: { subjectId: true } } } } } });
     const allowed = [];
     for (const identity of identities) if (identity.subject && p.gameServers(identity.subject, [server], now).length && await gameConsent(tx, identity.subject.id)) allowed.push(identity);
     await tx.playerPresence.deleteMany({ where: { serverId: input.serverId, observedAt: { lte: observedAt }, minecraftUuid: { notIn: allowed.map(identity => identity.uuid) } } });

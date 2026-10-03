@@ -1,3 +1,4 @@
+import { managedDevelopmentProvider } from './managed-development';
 import { ConflictException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Request } from 'express';
 import type { PassportService } from './passport.service';
@@ -35,7 +36,7 @@ export async function collectActivity(p: PassportService, req: Request, input: A
     let received = 0;
     for (const row of input.records) {
       const identity = await tx.minecraftIdentity.findUnique({ where: { uuid: row.minecraftUuid }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
-      if (!server.statisticsEnabled || !identity?.subject || identity.telemetryEpoch !== row.epoch || !await gameConsent(tx, identity.subject.id) || !p.gameServers(identity.subject, [server], now).length) continue;
+      if (!server.statisticsEnabled || !identity?.subject || identity.subject.identityProvider === managedDevelopmentProvider || identity.telemetryEpoch !== row.epoch || !await gameConsent(tx, identity.subject.id) || !p.gameServers(identity.subject, [server], now).length) continue;
       const generation = await tx.activityGeneration.upsert({ where: { epoch: row.epoch }, create: { epoch: row.epoch, subjectId: identity.subject.id, minecraftUuid: row.minecraftUuid }, update: {} });
       if (generation.subjectId !== identity.subject.id || generation.minecraftUuid !== row.minecraftUuid) continue;
       const counters = Object.fromEntries(counterNames.map(key => [key, BigInt(row[key])])) as Record<typeof counterNames[number], bigint>;

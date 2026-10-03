@@ -32,6 +32,7 @@ model Subject {
   updatedAt DateTime @updatedAt
   sessions WebSession[]
   minecraft MinecraftIdentity?
+  developmentAccount DevelopmentMinecraftAccount?
   links LinkSession[]
   administrator Administrator?
   consents ConsentReceipt[]
@@ -382,4 +383,15 @@ model ServiceCredential {
   revokedAt DateTime?
   createdAt DateTime @default(now())
   @@index([serviceId, createdAt])
+}
+
+// Administrator-managed game-only identities; never university or Discord proof.
+model DevelopmentMinecraftAccount {
+  subjectId String @id @db.Uuid
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  discordLinked Boolean @default(false)
+  enabled Boolean @default(true)
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

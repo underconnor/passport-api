@@ -1,3 +1,4 @@
+import { managedDevelopmentProvider } from './managed-development';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { createHmac, randomUUID } from 'node:crypto';
 import type { Prisma, Subject, MinecraftIdentity, DiscordIdentity, Administrator } from '@prisma/client';
@@ -30,7 +31,7 @@ function nextCursor(input: MemberQuery, offset: number, secret: string) { const 
 export async function adminMembers(p: PassportService, req: Request, input: MemberQuery) {
   await adminContext(p, req);
   const offset = cursorOffset(input, p.config.sessionSecret), now = new Date();
-  const filters: Prisma.SubjectWhereInput[] = [{ identityProvider: 'usaint' }];
+  const filters: Prisma.SubjectWhereInput[] = [{ OR: [{ identityProvider: 'usaint' }, { identityProvider: managedDevelopmentProvider, developmentAccount: { isNot: null } }] }];
   if (input.ids) filters.push({ id: { in: input.ids } });
   const active: Prisma.SubjectWhereInput = { membershipStatus: 'active', verifiedUntil: { gt: now }, accessSuspended: false };
   const suspended: Prisma.SubjectWhereInput = { OR: [{ accessSuspended: true }, { membershipStatus: 'suspended' }] };
@@ -46,13 +47,13 @@ export async function adminMembers(p: PassportService, req: Request, input: Memb
   const where = { AND: filters };
   const orderBy: Prisma.SubjectOrderByWithRelationInput[] = input.sort === 'name' ? [{ displayName: 'asc' }, { id: 'asc' }] : [{ createdAt: input.sort === 'newest' ? 'desc' : 'asc' }, { id: 'asc' }];
   const [rows, total, servers] = await p.db.$transaction([
-    p.db.subject.findMany({ where, orderBy, skip: offset, take: input.limit + 1, include: { minecraft: true, administrator: true, discordIdentity: { include: { roles: true } } } }), p.db.subject.count({ where }), p.db.serverRecord.findMany({ orderBy: { id: 'asc' } }),
+    p.db.subject.findMany({ where, orderBy, skip: offset, take: input.limit + 1, include: { minecraft: true, developmentAccount: true, administrator: true, discordIdentity: { include: { roles: true } } } }), p.db.subject.count({ where }), p.db.serverRecord.findMany({ orderBy: { id: 'asc' } }),
   ]);
   const presences = await p.db.playerPresence.findMany({ where: { minecraftUuid: { in: rows.flatMap(row => row.minecraft ? [row.minecraft.uuid] : []) } } });
   const members = await Promise.all(rows.slice(0, input.limit).map(async account => ({
-    id: account.id, displayName: account.displayName, department: account.department, studentId: verifiedStudentId(account, p.config.encryptionKey), admissionYear: account.admissionYear, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, verifiedUntil: account.verifiedUntil, universityVerifiedUntil: account.universityVerifiedUntil, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, discordId: account.discordId, minecraft: account.minecraft ? { uuid: account.minecraft.uuid, name: account.minecraft.name } : null,
+    id: account.id, identityProvider: account.identityProvider, developmentAccount: account.developmentAccount ? { enabled: account.developmentAccount.enabled, discordLinked: account.developmentAccount.discordLinked } : null, displayName: account.displayName, department: account.department, studentId: verifiedStudentId(account, p.config.encryptionKey), admissionYear: account.admissionYear, membershipStatus: account.membershipStatus, roleLabel: account.roleLabel, verifiedUntil: account.verifiedUntil, universityVerifiedUntil: account.universityVerifiedUntil, allowedServerIds: account.allowedServerIds, accessSuspended: account.accessSuspended, scopeRestricted: account.scopeRestricted, scopeLimit: account.scopeLimit, discordId: account.discordId, minecraft: account.minecraft ? { uuid: account.minecraft.uuid, name: account.minecraft.name } : null,
     presence: presenceDto(presences.find(row => row.minecraftUuid === account.minecraft?.uuid), servers, now), createdAt: account.createdAt, revision: accountRevision(account), administrator: account.administrator?.enabled ?? false,
-    discordConnection: await discordProfile(p.db, account.discordIdentity, p.config.discord), eligibleServerIds: p.gameServers({ ...account, accessSuspended: false }, servers, now, false).map(server => server.id),
+    discordConnection: await discordProfile(p.db, account.discordIdentity, p.config.discord), eligibleServerIds: p.gameServers({ ...account, accessSuspended: false, developmentAccount: account.developmentAccount ? { ...account.developmentAccount, enabled: true } : null }, servers, now, false).map(server => server.id),
   })));
   return { members, total, nextCursor: rows.length > input.limit ? nextCursor(input, offset + input.limit, p.config.sessionSecret) : null };
 }
