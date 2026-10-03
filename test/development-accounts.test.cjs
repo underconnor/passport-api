@@ -42,6 +42,7 @@ test('production managed accounts resolve real UUIDs and are game-only, never sc
  await browser(request(http).post('/v1/admin/operator-invitations'),admin,true).send({subjectId:account.id,role:'owner'}).expect(403);
  const devSession=await session(saved);await browser(request(http).get('/v1/admin/development-accounts'),devSession).expect(403);
  await db.administrator.create({data:{subjectId:account.id,enabled:true,role:'owner',totpSecret:''}});assert.equal((await policy()).administrator,false);
+ await server('staff_room','staff');assert.ok(!(await policy()).allowedServerIds.includes('staff_room'));
  const rows=(await browser(request(http).get('/v1/admin/development-accounts')).expect(200)).body.accounts;assert.equal(rows.length,1);
  assert.equal(await db.auditEvent.count({where:{action:'admin.development_account_created',actorSubjectId:admin.subject.id}}),1);
 });

@@ -7,18 +7,13 @@ import { adminPermissions, type AdminRole } from './admin-permissions';
 import { policyTransaction } from './database';
 import { verifiedStudentId } from './school-identity';
 import { hash } from './security';
+import { invalidateGamePolicy } from './invalidate-game-policy';
 
 const invitationLifetime = 24 * 60 * 60_000;
 function invitationDto(row: OperatorInvitation & { subject: Subject }, now = new Date()) {
   return { id: row.id, subjectId: row.subjectId, displayName: row.subject.displayName, role: row.role, status: row.status === 'pending' && row.expiresAt <= now ? 'expired' : row.status, expiresAt: row.expiresAt.toISOString(), createdAt: row.createdAt.toISOString() };
 }
 function schoolVerified(subject: Subject | null, now: Date) { return Boolean(subject?.identityProvider === 'usaint' && subject.universityVerifiedUntil && subject.universityVerifiedUntil > now); }
-async function invalidateGamePolicy(tx: Prisma.TransactionClient, subjectId: string) {
-  const identity = await tx.minecraftIdentity.findUnique({ where: { subjectId } });
-  if (!identity) return;
-  const changed = await tx.minecraftIdentity.update({ where: { uuid: identity.uuid }, data: { policyVersion: { increment: 1 }, policyFingerprint: '' } });
-  await tx.policyEvent.create({ data: { minecraftUuid: changed.uuid, policyVersion: changed.policyVersion } });
-}
 async function invalidateAuthority(p: PassportService, tx: Prisma.TransactionClient, subjectId: string, keepSessionId?: string) {
   await tx.webSession.deleteMany({ where: { subjectId, audienceHost: new URL(p.config.adminOrigin).host, ...(keepSessionId ? { id: { not: keepSessionId } } : {}) } });
   await tx.webSession.updateMany({ where: { subjectId }, data: { mfaVerifiedUntil: null } });

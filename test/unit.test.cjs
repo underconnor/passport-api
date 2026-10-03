@@ -117,8 +117,20 @@ test('members mode ignores legacy roster server lists and public settings reject
  for(const allowedServerIds of [[],['elsewhere'],['club'],undefined])assert.deepEqual(permittedServers({...subject,allowedServerIds},servers,{now}).map(row=>row.id),['club']);
  for(const changes of [{scopeRestricted:true,scopeLimit:[]},{membershipStatus:'inactive'},{verifiedUntil:now},{universityVerifiedUntil:now},{accessSuspended:true}])assert.deepEqual(permittedServers({...subject,...changes},servers,{now}),[]);
  const original={label:'회원 서버',sensitive:false,enabled:true,accessMode:'members',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-03T00:00:00.000Z'};
- for(const accessMode of ['members','selected','university'])assert.equal(serverSettingsSchema.safeParse({...original,accessMode}).success,true);
+ for(const accessMode of ['members','selected','university','staff'])assert.equal(serverSettingsSchema.safeParse({...original,accessMode}).success,true);
  assert.equal(serverSettingsSchema.safeParse({...original,accessMode:'roster'}).success,false);
+});
+
+test('staff-only servers require current school identity and enabled owner or operator authority',()=>{
+ const {permittedServers}=require('../dist/registry'),now=new Date('2026-10-04T00:00:00Z'),future=new Date(now.getTime()+60000);
+ const subject={id:'staff',identityProvider:'usaint',universityVerifiedUntil:future,membershipStatus:'inactive',verifiedUntil:new Date(0),accessSuspended:false,scopeRestricted:false,scopeLimit:[],discordIdentity:null};
+ const server={id:'staff_server',enabled:true,accessMode:'staff',discordRequirement:'linked',allowedSubjectIds:[]};
+ const ids=(changes={},options={})=>permittedServers({...subject,administrator:{enabled:true,role:'operator',revokedAt:null},...changes},[server],{now,...options}).map(row=>row.id);
+ for(const role of ['owner','operator'])assert.deepEqual(ids({administrator:{enabled:true,role,revokedAt:null}}),['staff_server']);
+ for(const administrator of [undefined,null,{enabled:true,role:'viewer',revokedAt:null},{enabled:false,role:'owner',revokedAt:null},{enabled:true,role:'operator',revokedAt:now},{enabled:true,role:'invented',revokedAt:null}])assert.deepEqual(ids({administrator}),[]);
+ for(const changes of [{accessSuspended:true},{membershipStatus:'suspended'},{universityVerifiedUntil:now},{universityVerifiedUntil:null},{identityProvider:'development'},{identityProvider:'managed-development',developmentAccount:{enabled:true,discordLinked:true}}])assert.deepEqual(ids(changes,{allowDevelopment:true}),[]);
+ assert.deepEqual(ids({scopeRestricted:true,scopeLimit:[]}),[]);assert.deepEqual(ids({scopeRestricted:true,scopeLimit:['staff_server']}),['staff_server']);
+ assert.deepEqual(permittedServers({...subject,administrator:{enabled:true,role:'owner',revokedAt:null}},[{...server,enabled:false}],{now}),[]);
 });
 
 test('Discord-linked signal requires the actual matching relationship, never a legacy reference or role status',()=>{

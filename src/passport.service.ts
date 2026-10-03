@@ -20,7 +20,7 @@ import { seedDiscordSettings } from './discord-management';
 import { verifiedStudentId } from './school-identity';
 import { migrateSchoolVerificationExpiry } from './school-expiry';
 
-type Context = { session: WebSession & { subject: (Subject & Pick<ScopeSubject, 'discordIdentity'>) | null }; token: string };
+type Context = { session: WebSession & { subject: (Subject & Pick<ScopeSubject, 'discordIdentity' | 'administrator'>) | null }; token: string };
 const sessionLifetime = 8 * 60 * 60 * 1000;
 @Injectable()
 export class PassportService {
@@ -74,7 +74,7 @@ export class PassportService {
     const host = this.host(req);
     const token = parseCookie(req.headers.cookie ?? '')[this.cookieName(req)];
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new UnauthorizedException({ code: 'session_required' });
-    const session = await this.db.webSession.findUnique({ where: { tokenHash: hash(token) }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
+    const session = await this.db.webSession.findUnique({ where: { tokenHash: hash(token) }, include: { subject: { include: { administrator: { select: { enabled: true, role: true, revokedAt: true } }, discordIdentity: { select: { subjectId: true } } } } } });
     if (!session || session.expiresAt <= new Date() || session.audienceHost !== host || (authenticated && !session.subject)) throw new UnauthorizedException({ code: 'session_required' });
     return { session, token };
   }
@@ -96,7 +96,7 @@ export class PassportService {
     catch (error) {
       if (!(error instanceof UnauthorizedException)) throw error;
       const token = opaqueToken();
-      const session = await this.db.webSession.create({ data: { tokenHash: hash(token), audienceHost: this.host(req), expiresAt: new Date(Date.now() + sessionLifetime) }, include: { subject: { include: { discordIdentity: { select: { subjectId: true } } } } } });
+      const session = await this.db.webSession.create({ data: { tokenHash: hash(token), audienceHost: this.host(req), expiresAt: new Date(Date.now() + sessionLifetime) }, include: { subject: { include: { administrator: { select: { enabled: true, role: true, revokedAt: true } }, discordIdentity: { select: { subjectId: true } } } } } });
       this.setCookie(req, res, token, sessionLifetime / 1000);
       context = { session, token };
     }
@@ -207,7 +207,7 @@ export class PassportService {
     if (!link.gameConfirmedAt || !link.webConfirmedAt) return link;
     if (!link.subjectId || !link.webSessionId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
     const session = await tx.webSession.findUnique({ where: { id: link.webSessionId } });
-    const subject = await tx.subject.findUnique({ where: { id: link.subjectId }, include: { discordIdentity: { select: { subjectId: true } } } });
+    const subject = await tx.subject.findUnique({ where: { id: link.subjectId }, include: { administrator: { select: { enabled: true, role: true, revokedAt: true } }, discordIdentity: { select: { subjectId: true } } } });
     if (!session || session.expiresAt <= new Date() || session.subjectId !== link.subjectId) throw new UnauthorizedException({ code: 'confirming_session_expired' });
     if (!subject || !this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
     const consent = await tx.consentReceipt.findFirst({ where: { subjectId: subject.id, source: 'minecraft_link', contextId: link.id, version: privacyNotice.version }, select: { id: true } });
@@ -228,7 +228,7 @@ export class PassportService {
       if (!found || !equal(found.tokenHash, hash(token))) throw new NotFoundException({ code: 'link_not_found' });
       this.ensurePending(found);
       if (found.webConfirmedAt) throw new ConflictException({ code: 'web_confirmation_consumed' });
-      const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId }, include: { discordIdentity: { select: { subjectId: true } } } });
+      const subject = await tx.subject.findUniqueOrThrow({ where: { id: subjectId }, include: { administrator: { select: { enabled: true, role: true, revokedAt: true } }, discordIdentity: { select: { subjectId: true } } } });
       if (!this.gameServers(subject, await tx.serverRecord.findMany()).length) throw new ForbiddenException({ code: 'membership_required' });
       await recordConsent(tx, subject.id, 'minecraft_link', id, consent);
       const claimed = await tx.linkSession.update({ where: { id }, data: { subjectId: subject.id, webSessionId, webConfirmedAt: new Date() } });

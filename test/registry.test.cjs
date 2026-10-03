@@ -508,3 +508,81 @@ test('policy Discord-linked signal is false without a Minecraft subject or with 
  await db.discordIdentity.update({where:{discordUserId:actualId},data:{subjectId:null}});
  const unlinked=await policy({uuid});assert.equal(unlinked.discordLinked,false);assert.equal(unlinked.policyVersion,denied.policyVersion+1);assert.deepEqual(unlinked.allowedServerIds,denied.allowedServerIds);
 });
+
+test('staff settings clear selected users and Discord conditions, preserve unrelated servers and invalidate linked policies',async()=>{
+ const selected=await subject(),identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'StaffSettings',subjectId:selected.id}});
+ await settings('lobby',{accessMode:'selected',allowedSubjectIds:[selected.id]});const oldPolicy=await policy(identity);
+ const untouched=await db.serverRecord.findUnique({where:{id:'survival'}}),before=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}}),events=await db.policyEvent.count();
+ const result=(await settings('lobby',{accessMode:'staff',discordRequirement:'linked',allowedSubjectIds:[randomUUID()],label:'운영진 공간',commandName:'운영진'})).body.server;
+ assert.equal(result.accessMode,'staff');assert.equal(result.discordRequirement,'any');assert.deepEqual(result.allowedSubjectIds,[]);assert.equal(result.label,'운영진 공간');assert.equal(result.commandName,'운영진');
+ assert.deepEqual(await db.serverRecord.findUnique({where:{id:'survival'}}),untouched);
+ const changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(changed.policyVersion,before.policyVersion+1);assert.equal(changed.policyFingerprint,'');assert.equal(changed.telemetryEpoch,before.telemetryEpoch);assert.equal(await db.policyEvent.count(),events+1);
+ assert.ok(oldPolicy.allowedServerIds.includes('lobby'));assert.deepEqual((await policy(identity)).allowedServerIds,['survival']);
+ const audit=await db.auditEvent.findFirst({where:{action:'admin.server_updated',objectId:'lobby'},orderBy:{createdAt:'desc'}});assert.equal(audit.details.after.accessMode,'staff');assert.deepEqual(audit.details.after.allowedSubjectIds,[]);
+ await settings('lobby',{accessMode:'staff',commandName:'survival'},409);await settings('lobby',{accessMode:'unsupported'},400);
+ const stale={label:result.label,sensitive:result.sensitive,enabled:result.enabled,accessMode:'staff',allowedSubjectIds:[],expectedUpdatedAt:new Date(0).toISOString()};
+ assert.equal((await browser(request(http).put('/v1/admin/servers/lobby'),admin,true).send(stale).expect(409)).body.code,'server_changed');
+});
+
+test('school-authenticated staff link and use private servers across portal, statistics, presence and personal limits',async()=>{
+ for(const id of ['lobby','survival'])await settings(id,{accessMode:'staff',statisticsEnabled:true});
+ const owner=await subject({membershipStatus:'inactive',verifiedUntil:new Date(0),allowedServerIds:[]}),portal=await session(owner,PORTAL);
+ await db.administrator.create({data:{subjectId:owner.id,enabled:true,role:'operator',totpSecret:''}});
+ const link=await gameLink();await webLink(link,portal).expect(200);await confirmGame(link).expect(200);
+ const identity=await db.minecraftIdentity.findUnique({where:{uuid:link.minecraftUuid}}),initial=await policy(identity);
+ assert.equal(initial.status,'active');assert.equal(initial.administrator,true);assert.equal(initial.display.member,false);assert.deepEqual(initial.allowedServerIds,['lobby','survival']);assert.deepEqual(initial.telemetry.serverIds,['lobby','survival']);
+ assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['lobby','survival']);
+ const eligible=(await browser(request(http).get('/v1/admin/members').query({ids:owner.id})).expect(200)).body.members[0];assert.deepEqual(eligible.eligibleServerIds,['lobby','survival']);
+ for(const serverId of ['lobby','survival']){
+  assert.equal((await activityFor(identity,serverId)).received,1);
+  assert.equal((await service(request(http).post('/v1/minecraft/presence')).send({serverId,observedAt:new Date().toISOString(),players:[identity.uuid]}).expect(200)).body.received,1);
+ }
+ for(const url of ['/v1/me/stats',`/v1/minecraft/players/${identity.uuid}/stats`]){
+  const result=(await (url.includes('/minecraft/')?service(request(http).get(url)):browser(request(http).get(url),portal)).expect(200)).body;
+  assert.deepEqual(result.servers.map(row=>row.serverId),['lobby','survival']);assert.equal(result.totals.playSeconds,60);assert.equal(result.collection.effective,true);
+ }
+ await browser(request(http).put(`/v1/admin/members/${owner.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['survival']}).expect(200);
+ assert.deepEqual((await policy(identity)).allowedServerIds,['survival']);assert.equal((await activityFor(identity,'lobby')).received,0);
+ await settings('survival',{enabled:false});assert.deepEqual((await policy(identity)).allowedServerIds,[]);
+ await settings('survival',{enabled:true});await db.subject.update({where:{id:owner.id},data:{scopeRestricted:false,universityVerifiedUntil:new Date(Date.now()+15000)}});
+ const lease=await policy(identity);assert.ok(Date.parse(lease.expiresAt)>Date.parse(lease.issuedAt));assert.ok(Date.parse(lease.expiresAt)-Date.parse(lease.issuedAt)<=15000);
+ const base={membershipStatus:'inactive',accessSuspended:false,universityVerifiedUntil:new Date(Date.now()+3600000)};
+ for(const change of [{accessSuspended:true},{membershipStatus:'suspended'},{universityVerifiedUntil:new Date(0)}]){
+  await db.subject.update({where:{id:owner.id},data:{...base,...change}});assert.deepEqual((await policy(identity)).allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);assert.equal((await activityFor(identity,'survival')).received,0);
+  assert.equal((await service(request(http).post('/v1/minecraft/presence')).send({serverId:'survival',observedAt:new Date().toISOString(),players:[identity.uuid]}).expect(200)).body.received,0);
+ }
+});
+
+test('staff mode rejects ordinary members, viewers, disabled and revoked authority without exposing the private server',async()=>{
+ for(const id of ['lobby','survival'])await settings(id,{accessMode:'staff'});
+ const target=await subject(),portal=await session(target,PORTAL),identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'StaffDenied',subjectId:target.id}});
+ const gate=async allowed=>{
+  assert.deepEqual((await policy(identity)).allowedServerIds,allowed?['lobby','survival']:[]);
+  assert.deepEqual((await visibleServers(portal)).map(row=>row.id),allowed?['lobby','survival']:[]);
+ };
+ await gate(false);
+ for(const values of [{role:'viewer',enabled:true,revokedAt:null},{role:'owner',enabled:false,revokedAt:null},{role:'operator',enabled:true,revokedAt:new Date()},{role:'owner',enabled:true,revokedAt:null},{role:'operator',enabled:true,revokedAt:null}]){
+  await db.administrator.upsert({where:{subjectId:target.id},create:{subjectId:target.id,totpSecret:'',...values},update:values});await gate(values.enabled&&!values.revokedAt&&values.role!=='viewer');
+ }
+});
+
+test('staff access migration adds only the supported mode without changing settings, revisions or policies',async()=>{
+ const statements=statementsFromMigration('prisma/migrations/20261004020000_staff_server_access/migration.sql');assert.equal(statements[0],'SELECT pg_advisory_xact_lock(1346458451, 1347374153)');
+ const schema='staff_migration_'+randomUUID().replaceAll('-','');
+ await db.$transaction(async tx=>{
+  await tx.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);await tx.$executeRawUnsafe(`SET LOCAL search_path TO "${schema}"`);
+  await tx.$executeRawUnsafe('CREATE TABLE "ServerRecord" (LIKE "registry_test"."ServerRecord" INCLUDING ALL)');
+  await tx.$executeRawUnsafe('ALTER TABLE "ServerRecord" DROP CONSTRAINT "ServerRecord_accessMode_check"');
+  await tx.$executeRawUnsafe('ALTER TABLE "ServerRecord" ADD CONSTRAINT "ServerRecord_accessMode_check" CHECK ("accessMode" IN (\'members\',\'selected\',\'university\'))');
+  for(const mode of ['members','selected','university'])await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label","accessMode","allowedSubjectIds","discordRequirement","updatedAt") VALUES ($1,$1,$1,$1,ARRAY[$2::UUID],$3,\'2026-01-01\')',mode,admin.subject.id,mode==='university'?'linked':'any');
+  const before=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ServerRecord" ORDER BY "id"`);
+  for(const statement of statements)await tx.$executeRawUnsafe(statement);
+  assert.deepEqual(await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ServerRecord" ORDER BY "id"`),before);
+  await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label","accessMode") VALUES (\'staff\',\'staff\',\'Staff\',\'staff\')');
+  assert.equal((await tx.$queryRawUnsafe(`SELECT "accessMode" FROM "${schema}"."ServerRecord" WHERE "id"=\'staff\'`))[0].accessMode,'staff');
+  const constraint=(await tx.$queryRawUnsafe('SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid=$1::regclass AND conname=\'ServerRecord_accessMode_check\'',`"${schema}"."ServerRecord"`))[0].definition;
+  for(const mode of ['members','selected','university','staff'])assert.ok(constraint.includes(mode));assert.ok(!constraint.includes('roster'));
+  await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+ });
+ await assert.rejects(db.serverRecord.create({data:{id:'invalid_staff_mode',commandName:'invalid_staff_mode',label:'Invalid',accessMode:'all_staff'}}),/ServerRecord_accessMode_check/);
+});

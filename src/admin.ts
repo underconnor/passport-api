@@ -4,12 +4,13 @@ import { ConflictException, ForbiddenException, NotFoundException } from '@nestj
 import type { Request, Response } from 'express';
 import type { PassportService } from './passport.service';
 import { equal, opaqueToken, hash, csrf } from './security';
-import { policyTransaction, serializable } from './database';
+import { policyTransaction } from './database';
 import { newTotpSecret, verifyTotp } from './totp';
 import { seal, unseal } from './sealed';
 import { refreshDiscordSubject } from './discord-policy';
 import type { Prisma } from '@prisma/client';
 import { adminPermissions, type AdminPermission } from './admin-permissions';
+import { invalidateGamePolicy } from './invalidate-game-policy';
 
 function adminHost(p: PassportService, req: Request) {
   if (!p.config.adminOrigin || p.host(req) !== new URL(p.config.adminOrigin).host) throw new ForbiddenException({ code: 'admin_host_required' });
@@ -60,13 +61,14 @@ export async function beginEnrollment(p: PassportService, req: Request, bootstra
   if (!p.config.adminBootstrapToken || !equal(bootstrapToken, p.config.adminBootstrapToken)) throw new ForbiddenException({ code: 'bootstrap_invalid' });
   const subjectId = c.session.subjectId!;
   const secret = p.config.adminMfaRequired ? newTotpSecret() : null;
-  await serializable(p.db, async tx => {
+  await policyTransaction(p.db, async tx => {
     const first = await tx.administrator.findFirst();
     const reenrollingWithoutSecret = Boolean(p.config.adminMfaRequired && first?.subjectId === subjectId && first.enabled && !first.totpSecret);
     if (first && (first.subjectId !== subjectId || (first.enabled && !reenrollingWithoutSecret))) throw new ConflictException({ code: 'admin_enrollment_closed' });
     const sealedSecret = secret ? seal(secret, p.config.encryptionKey, `totp:${subjectId}`) : '';
     if (first?.revokedAt) throw new ConflictException({ code: 'admin_enrollment_closed' });
     await tx.administrator.upsert({ where: { subjectId }, create: { subjectId, role: 'owner', totpSecret: sealedSecret, enabled: !p.config.adminMfaRequired }, update: { ...(secret ? { totpSecret: sealedSecret } : { enabled: true }), failedAttempts: 0, lockedUntil: null } });
+    await invalidateGamePolicy(tx, subjectId);
     await tx.auditEvent.create({ data: { action: p.config.adminMfaRequired ? 'admin.enrollment_started' : 'admin.enrolled', subjectId, actorSubjectId: subjectId, details: { mfaRequired: p.config.adminMfaRequired } } });
   });
   if (!secret) return { enrolled: true, mfaRequired: false };
@@ -89,6 +91,7 @@ export async function verifyAdminMfa(p: PassportService, req: Request, res: Resp
     }
     const until = new Date(Date.now() + 15 * 60_000);
     await tx.administrator.update({ where: { subjectId: admin.subjectId }, data: { enabled: true, lastTotpStep: BigInt(step), failedAttempts: 0, lockedUntil: null } });
+    if (!admin.enabled) await invalidateGamePolicy(tx, admin.subjectId);
     await tx.webSession.update({ where: { id: c.session.id }, data: { mfaVerifiedUntil: until, tokenHash: hash(token) } });
     await tx.auditEvent.create({ data: { action: admin.enabled ? 'admin.mfa_verified' : 'admin.enrolled', subjectId: admin.subjectId, actorSubjectId: admin.subjectId } });
     return { mfaVerifiedUntil: until.toISOString() };
@@ -112,7 +115,7 @@ export async function setMemberAccess(p: PassportService, req: Request, id: stri
     await requireAdminTransaction(p, tx, actor);
     await protectAdministratorTarget(tx, actor.session.subjectId!, id);
     if (actor.session.subjectId === id && input.suspended) throw new ConflictException({ code: 'self_admin_change_forbidden' });
-    const current = await tx.subject.findUnique({ where: { id }, include: { minecraft: true, developmentAccount: true, discordIdentity: { select: { subjectId: true } } } });
+    const current = await tx.subject.findUnique({ where: { id }, include: { administrator: { select: { enabled: true, role: true, revokedAt: true } }, minecraft: true, developmentAccount: true, discordIdentity: { select: { subjectId: true } } } });
     if (!current || (current.identityProvider !== 'usaint' && !(current.identityProvider === managedDevelopmentProvider && current.developmentAccount))) throw new NotFoundException({ code: 'subject_not_found' });
     const records = await tx.serverRecord.findMany({ orderBy: { id: 'asc' } });
     const eligible = p.gameServers({ ...current, accessSuspended: false, developmentAccount: current.developmentAccount ? { ...current.developmentAccount, enabled: true } : null }, records, new Date(), false).map(server => server.id);

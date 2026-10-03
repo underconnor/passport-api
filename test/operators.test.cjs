@@ -147,3 +147,43 @@ test('additive migration preserves existing administrator authority and makes ne
  });}catch(error){assert.equal(error,rollback);}
  assert.equal(await db.administrator.count(),1);
 });
+
+test('staff-server admission follows accepted operator authority and publishes every promotion, demotion and revocation',async()=>{
+ await db.serverRecord.upsert({where:{id:'staff_room'},create:{id:'staff_room',commandName:'staff_room',label:'운영진 공간',enabled:true,accessMode:'staff'},update:{enabled:true,accessMode:'staff'}});
+ const target=await session(await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)})),portal=await session(target.subject,'portal.example.test');
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'StaffLifecycle',subjectId:target.subject.id}});
+ const policy=async()=>(await service(request(http).get(`/v1/minecraft/policies/${identity.uuid}`)).expect(200)).body;
+ const visible=async()=>(await browser(request(http).get('/v1/me/servers'),portal).expect(200)).body.servers.map(row=>row.id);
+ assert.deepEqual((await policy()).allowedServerIds,[]);assert.deepEqual(await visible(),[]);
+ const invitation=(await invite(target)).body.invitation;
+ let previous=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}}),events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+ await accept(target,invitation.id);let changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(changed.policyVersion,previous.policyVersion+1);assert.equal(changed.policyFingerprint,'');assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
+ assert.deepEqual((await policy()).allowedServerIds,['staff_room']);assert.deepEqual(await visible(),['staff_room']);
+ for(const role of ['viewer','operator',null]){
+  previous=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+  if(role)await browser(request(http).put(`/v1/admin/operators/${target.subject.id}`),owner,true).send({role}).expect(200);
+  else await browser(request(http).delete(`/v1/admin/operators/${target.subject.id}`),owner,true).expect(200);
+  changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(changed.policyVersion,previous.policyVersion+1);assert.equal(changed.policyFingerprint,'');assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
+  assert.deepEqual((await policy()).allowedServerIds,role==='operator'?['staff_room']:[]);assert.deepEqual(await visible(),role==='operator'?['staff_room']:[]);assert.equal(changed.telemetryEpoch,previous.telemetryEpoch);
+ }
+});
+
+test('first-owner bootstrap and MFA activation invalidate game policy before staff admission becomes available',async()=>{
+ await db.serverRecord.upsert({where:{id:'staff_room'},create:{id:'staff_room',commandName:'staff_room',label:'운영진 공간',enabled:true,accessMode:'staff'},update:{enabled:true,accessMode:'staff'}});
+ for(const mfaRequired of [false,true]){
+  await db.administrator.deleteMany();p.config.adminMfaRequired=mfaRequired;
+  const target=await session(await subject({membershipStatus:'inactive',verifiedUntil:new Date(0)}));
+  const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'StaffBootstrap',subjectId:target.subject.id}}),url=`/v1/minecraft/policies/${identity.uuid}`;
+  assert.deepEqual((await service(request(http).get(url)).expect(200)).body.allowedServerIds,[]);
+  let previous=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}}),events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+  const enrollment=(await browser(request(http).post('/v1/admin/enrollment'),target,true).send({bootstrapToken:p.config.adminBootstrapToken}).expect(200)).body;
+  let changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(changed.policyVersion,previous.policyVersion+1);assert.equal(changed.policyFingerprint,'');assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
+  assert.deepEqual((await service(request(http).get(url)).expect(200)).body.allowedServerIds,mfaRequired?[]:['staff_room']);
+  if(mfaRequired){
+   previous=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});events=await db.policyEvent.count({where:{minecraftUuid:identity.uuid}});
+   await browser(request(http).post('/v1/admin/mfa'),target,true).send({code:totpAt(enrollment.secret,Math.floor(Date.now()/30000))}).expect(200);
+   changed=await db.minecraftIdentity.findUnique({where:{uuid:identity.uuid}});assert.equal(changed.policyVersion,previous.policyVersion+1);assert.equal(changed.policyFingerprint,'');assert.equal(await db.policyEvent.count({where:{minecraftUuid:identity.uuid}}),events+1);
+   assert.deepEqual((await service(request(http).get(url)).expect(200)).body.allowedServerIds,['staff_room']);
+  }
+ }
+});

@@ -1,17 +1,18 @@
 import { managedGameActive, type ManagedGameSubject, managedDevelopmentProvider } from './managed-development';
 import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import type { PrismaClient, ServerRecord, Subject } from '@prisma/client';
+import type { Administrator, PrismaClient, ServerRecord, Subject } from '@prisma/client';
 import type { Request } from 'express';
 import type { ServerDefinition } from './config';
 import type { PassportService } from './passport.service';
 import { adminContext, requireAdminTransaction, protectAdministratorTarget } from './admin';
 import { policyTransaction } from './database';
 import { hasLinkedDiscordIdentity } from './discord-policy';
+import { gameAdministrator } from './admin-permissions';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
-export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
-export type ScopeSubject = Pick<Subject, 'id' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & ManagedGameSubject & { discordIdentity: { subjectId: string | null } | null };
+export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'members' | 'selected' | 'university' | 'staff'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
+export type ScopeSubject = Pick<Subject, 'id' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & ManagedGameSubject & { discordIdentity: { subjectId: string | null } | null; administrator?: Pick<Administrator, 'enabled' | 'role' | 'revokedAt'> | null };
 type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
 
@@ -23,9 +24,11 @@ export function permittedServers(subject: ScopeSubject, servers: ServerRecord[],
   if (subject.accessSuspended || subject.membershipStatus === 'suspended' || (!university && !development)) return [];
   const discordLinked = managed ? subject.developmentAccount!.discordLinked : hasLinkedDiscordIdentity(subject);
   const member = subject.membershipStatus === 'active' && subject.verifiedUntil > now;
+  const staff = subject.identityProvider === 'usaint' && university && gameAdministrator(subject.administrator);
   return servers.filter(server => server.enabled
     && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && (managed ? !discordLinked : subject.discordIdentity === null)))
       : server.accessMode === 'selected' ? university && server.allowedSubjectIds.includes(subject.id)
+        : server.accessMode === 'staff' ? staff
         : member && server.accessMode === 'members')
     && (!applyPersonalLimit || !subject.scopeRestricted || subject.scopeLimit.includes(server.id)));
 }
@@ -73,9 +76,10 @@ export async function setServerSettings(p: PassportService, req: Request, id: st
     const previous = await tx.serverRecord.findUnique({ where: { id } });
     if (!previous) throw new NotFoundException({ code: 'server_not_found' });
     if (previous.updatedAt.getTime() !== new Date(input.expectedUpdatedAt).getTime()) throw new ConflictException({ code: 'server_changed' });
-    if (input.allowedSubjectIds.length && await tx.subject.count({ where: { id: { in: input.allowedSubjectIds }, OR: [{ identityProvider: 'usaint' }, { identityProvider: managedDevelopmentProvider, developmentAccount: { isNot: null } }] } }) !== input.allowedSubjectIds.length) throw new ForbiddenException({ code: 'invalid_selected_subjects' });
+    const allowedSubjectIds = input.accessMode === 'staff' ? [] : input.allowedSubjectIds;
+    if (allowedSubjectIds.length && await tx.subject.count({ where: { id: { in: allowedSubjectIds }, OR: [{ identityProvider: 'usaint' }, { identityProvider: managedDevelopmentProvider, developmentAccount: { isNot: null } }] } }) !== allowedSubjectIds.length) throw new ForbiddenException({ code: 'invalid_selected_subjects' });
     const { expectedUpdatedAt: _expected, ...requested } = input;
-    const settings = { ...requested, commandName: input.commandName ?? previous.commandName, discordRequirement: input.accessMode === 'university' ? input.discordRequirement ?? previous.discordRequirement : 'any' };
+    const settings = { ...requested, allowedSubjectIds, commandName: input.commandName ?? previous.commandName, discordRequirement: input.accessMode === 'university' ? input.discordRequirement ?? previous.discordRequirement : 'any' };
     // Keep command names unique across both administrator names and legacy immutable IDs.
     if (await tx.serverRecord.findFirst({ where: { id: { not: id }, OR: [{ commandName: settings.commandName }, { id: settings.commandName }] }, select: { id: true } })) throw new ConflictException({ code: 'server_command_conflict' });
     const updatedAt = new Date(Math.max(Date.now(), previous.updatedAt.getTime() + 1));
