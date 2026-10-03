@@ -8,8 +8,8 @@ import { adminContext, requireAdminTransaction, protectAdministratorTarget } fro
 import { policyTransaction } from './database';
 
 export type HeartbeatInput = { source: 'velocity' | 'paper'; servers: { id: string; label: string }[] };
-export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'roster' | 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
-export type ScopeSubject = Pick<Subject, 'id' | 'allowedServerIds' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & { discordIdentity: { subjectId: string | null } | null };
+export type ServerSettings = { commandName?: string; discordRequirement?: 'any' | 'linked' | 'unlinked'; statisticsEnabled?: boolean; label: string; sensitive: boolean; enabled: boolean; accessMode: 'members' | 'selected' | 'university'; allowedSubjectIds: string[]; expectedUpdatedAt: string };
+export type ScopeSubject = Pick<Subject, 'id' | 'scopeRestricted' | 'scopeLimit' | 'accessSuspended' | 'membershipStatus' | 'verifiedUntil' | 'identityProvider' | 'universityVerifiedUntil'> & { discordIdentity: { subjectId: string | null } | null };
 type ScopeOptions = { now?: Date; allowDevelopment?: boolean; applyPersonalLimit?: boolean };
 const maxServers = 64;
 
@@ -23,7 +23,7 @@ export function permittedServers(subject: ScopeSubject, servers: ServerRecord[],
   return servers.filter(server => server.enabled
     && (server.accessMode === 'university' ? university && (server.discordRequirement === 'any' || (server.discordRequirement === 'linked' && discordLinked) || (server.discordRequirement === 'unlinked' && subject.discordIdentity === null))
       : server.accessMode === 'selected' ? university && server.allowedSubjectIds.includes(subject.id)
-        : member && (server.accessMode === 'roster' ? subject.allowedServerIds.includes(server.id) : server.accessMode === 'members'))
+        : member && server.accessMode === 'members')
     && (!applyPersonalLimit || !subject.scopeRestricted || subject.scopeLimit.includes(server.id)));
 }
 
@@ -35,7 +35,7 @@ export function serverDto(server: ServerRecord, now = new Date()) {
 export async function seedServerRegistry(db: PrismaClient, configured: ServerDefinition[]) {
   await policyTransaction(db, async tx => {
     if (await tx.serverRecord.count() !== 0) return;
-    await tx.serverRecord.createMany({ data: configured.map(server => ({ id: server.id, commandName: server.id, label: server.label, sensitive: server.sensitive ?? false, enabled: true, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'roster' })) });
+    await tx.serverRecord.createMany({ data: configured.map(server => ({ id: server.id, commandName: server.id, label: server.label, sensitive: server.sensitive ?? false, enabled: true, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'members' })) });
   });
 }
 
@@ -51,7 +51,7 @@ export async function heartbeatServers(p: PassportService, req: Request, input: 
     const seen = input.source === 'paper' ? { paperSeenAt: new Date() } : { proxySeenAt: new Date() };
     for (const server of input.servers) {
       if (ids.has(server.id)) await tx.serverRecord.update({ where: { id: server.id }, data: seen });
-      else await tx.serverRecord.create({ data: { id: server.id, commandName: server.id, label: server.label, enabled: false, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'roster', ...seen } });
+      else await tx.serverRecord.create({ data: { id: server.id, commandName: server.id, label: server.label, enabled: false, statisticsEnabled: server.id !== 'ssu_lobby', accessMode: 'members', ...seen } });
     }
     return { received: input.servers.length, registered: newServers.length };
   });

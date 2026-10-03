@@ -31,10 +31,10 @@ beforeEach(async()=>{
 afterEach(async()=>{await app?.close();});
 
 test('bootstrap preserves existing records and heartbeats discover disabled servers without changing settings revisions',async()=>{
- const initial=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(initial.enabled,true);assert.equal(initial.accessMode,'roster');
+ const initial=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal(initial.enabled,true);assert.equal(initial.accessMode,'members');
  await request(http).post('/v1/minecraft/servers/heartbeat').send({source:'paper',servers:[{id:'creative',label:'건축'}]}).expect(401);
  assert.deepEqual((await heartbeat('paper',[{id:'creative',label:'건축'}])).body,{received:1,registered:1});
- const found=await db.serverRecord.findUnique({where:{id:'creative'}});assert.equal(found.enabled,false);assert.equal(found.accessMode,'roster');
+ const found=await db.serverRecord.findUnique({where:{id:'creative'}});assert.equal(found.enabled,false);assert.equal(found.accessMode,'members');
  await heartbeat('velocity',[{id:'creative',label:'ignored replacement'},{id:'lobby',label:'ignored lobby'}]);
  const listing=(await browser(request(http).get('/v1/admin/servers')).expect(200)).body.servers;
  const listed=listing.find(server=>server.id==='creative');assert.equal(listed.label,'건축');assert.equal(listed.online,true);assert.equal(listed.proxyAvailable,true);assert.equal(listed.updatedAt,found.updatedAt.toISOString());
@@ -123,7 +123,7 @@ test('university is opt-in: nonmembers see only allowed servers and can link wit
  assert.equal(await db.auditEvent.count({where:{action:'minecraft.linked',subjectId:outsider.id}}),1);
 });
 
-test('roster and members keep the membership gate while selected grants explicitly chosen school users',async()=>{
+test('members servers keep the membership gate while selected grants explicitly chosen school users',async()=>{
  const outsider=await subject({membershipStatus:'inactive',verifiedUntil:new Date(Date.now()+3600000)}),portal=await session(outsider,PORTAL);
  await publicServer();await heartbeat('paper',[{id:'club',label:'회원 전용 비공개 이름'},{id:'selected',label:'선택 회원 전용 이름'}]);
  await settings('club',{enabled:true,accessMode:'members'});await settings('selected',{enabled:true,accessMode:'selected',allowedSubjectIds:[outsider.id]});
@@ -415,5 +415,76 @@ test('selected school users can complete Minecraft linking without roster member
  result=await policy({uuid:link.minecraftUuid});assert.ok(Date.parse(result.expiresAt)-Date.parse(result.issuedAt)<=15000);assert.ok(Date.parse(result.expiresAt)>Date.parse(result.issuedAt));
  for(const change of [{accessSuspended:true},{accessSuspended:false,membershipStatus:'suspended'},{membershipStatus:'inactive',universityVerifiedUntil:new Date(0)}]){
   await db.subject.update({where:{id:owner.id},data:change});assert.deepEqual((await policy({uuid:link.minecraftUuid})).allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+ }
+});
+
+test('members admission ignores empty or obsolete roster scopes consistently across policy, portal, admin, statistics and collection',async()=>{
+ const owner=await subject({allowedServerIds:[]}),portal=await session(owner,PORTAL);
+ const link=await gameLink();await webLink(link,portal).expect(200);await confirmGame(link).expect(200);
+ const identity=await db.minecraftIdentity.findUnique({where:{uuid:link.minecraftUuid}});
+ for(const allowedServerIds of [[],['removed_legacy_server'],['lobby']]){
+  await db.subject.update({where:{id:owner.id},data:{allowedServerIds}});
+  assert.deepEqual((await policy(identity)).allowedServerIds,['lobby','survival']);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['lobby','survival']);
+  const member=(await browser(request(http).get('/v1/admin/members').query({ids:owner.id})).expect(200)).body.members[0];assert.deepEqual(member.eligibleServerIds,['lobby','survival']);
+  for(const serverId of ['lobby','survival']){assert.equal((await activityFor(identity,serverId)).received,1);assert.equal((await service(request(http).post('/v1/minecraft/presence')).send({serverId,observedAt:new Date().toISOString(),players:[identity.uuid]}).expect(200)).body.received,1);}
+  for(const url of ['/v1/me/stats',`/v1/minecraft/players/${identity.uuid}/stats`])assert.deepEqual((await (url.includes('/minecraft/')?service(request(http).get(url)):browser(request(http).get(url),portal)).expect(200)).body.servers.map(row=>row.serverId),['lobby','survival']);
+ }
+ await browser(request(http).put(`/v1/admin/members/${owner.id}/access`),admin,true).send({suspended:false,restricted:true,serverIds:['survival']}).expect(200);
+ assert.deepEqual((await policy(identity)).allowedServerIds,['survival']);assert.equal((await activityFor(identity,'lobby')).received,0);
+ await db.subject.update({where:{id:owner.id},data:{verifiedUntil:new Date(0)}});assert.deepEqual((await policy(identity)).allowedServerIds,[]);assert.equal((await activityFor(identity,'survival')).received,0);
+});
+
+test('retired roster settings are rejected while membership sync still grants and revokes members independently of legacy server lists',async()=>{
+ const before=await db.serverRecord.findUnique({where:{id:'lobby'}});assert.equal((await settings('lobby',{accessMode:'roster'},400)).body.code,'invalid_request');
+ assert.deepEqual(await db.serverRecord.findUnique({where:{id:'lobby'}}),before);
+ const {applyRosterSnapshot}=require('../dist/membership-sync'),{studentKey}=require('../dist/integrations/sheets');
+ const key=studentKey('99990123',process.env.ROSTER_MATCHING_SECRET),owner=await subject({universityKey:key,membershipStatus:'inactive',allowedServerIds:[],verifiedUntil:new Date(0)}),portal=await session(owner,PORTAL);
+ const identity=await db.minecraftIdentity.create({data:{uuid:randomUUID(),name:'MembersSync',subjectId:owner.id}});assert.deepEqual((await policy(identity)).allowedServerIds,[]);
+ const now=new Date();await applyRosterSnapshot(db,{entries:[{studentKey:key,status:'active',roleLabel:'회원',serverIds:[]}],sourceKey:'a'.repeat(64),fetchedAt:now},{allowedServerIds:['lobby','survival']});
+ assert.deepEqual((await db.subject.findUnique({where:{id:owner.id}})).allowedServerIds,[]);assert.deepEqual((await policy(identity)).allowedServerIds,['lobby','survival']);assert.deepEqual((await visibleServers(portal)).map(row=>row.id),['lobby','survival']);
+ const next={entries:[{studentKey:key,status:'inactive',roleLabel:'',serverIds:[]}],sourceKey:'a'.repeat(64),fetchedAt:new Date(now.getTime()+1)};
+ const {rosterDigest}=require('../dist/membership-sync');await applyRosterSnapshot(db,next,{allowedServerIds:['lobby','survival'],expectedApprovalDigest:rosterDigest(next)});
+ assert.deepEqual((await policy(identity)).allowedServerIds,[]);assert.deepEqual(await visibleServers(portal),[]);
+});
+
+function statementsFromMigration(file){
+ const sql=require('node:fs').readFileSync(file,'utf8').replace(/^--.*$/gm,'');let dollarQuoted=false,statement='';const statements=[];
+ for(const token of sql.split(/(\$\$|;)/)){if(token==='$$')dollarQuoted=!dollarQuoted;if(token===';'&&!dollarQuoted){statements.push(statement.trim());statement='';}else statement+=token;}
+ if(statement.trim())statements.push(statement.trim());return statements.filter(value=>value&&!['BEGIN','COMMIT'].includes(value));
+}
+test('members migration preserves selected settings, subject overrides, telemetry and history while atomically revising changed servers and policies',async()=>{
+ const statements=statementsFromMigration('prisma/migrations/20261003020000_members_server_access/migration.sql');
+ assert.equal(statements[0],'SELECT pg_advisory_xact_lock(1346458451, 1347374153)');
+ for(const hasLegacy of [true,false]){
+  const schema='members_migration_'+randomUUID().replaceAll('-',''),owner=randomUUID(),uuid=randomUUID(),unlinked=randomUUID(),epoch=randomUUID();
+  await db.$transaction(async tx=>{
+   await tx.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);await tx.$executeRawUnsafe(`SET LOCAL search_path TO "${schema}"`);
+   await tx.$executeRawUnsafe('CREATE TABLE "ServerRecord" (LIKE "registry_test"."ServerRecord" INCLUDING ALL)');
+   await tx.$executeRawUnsafe('ALTER TABLE "ServerRecord" DROP CONSTRAINT "ServerRecord_accessMode_check"');
+   await tx.$executeRawUnsafe('ALTER TABLE "ServerRecord" ADD CONSTRAINT "ServerRecord_accessMode_check" CHECK ("accessMode" IN (\'roster\',\'members\',\'selected\',\'university\'))');
+   await tx.$executeRawUnsafe('ALTER TABLE "ServerRecord" ALTER COLUMN "accessMode" SET DEFAULT \'roster\'');
+   await tx.$executeRawUnsafe('CREATE TABLE "MinecraftIdentity" ("uuid" UUID PRIMARY KEY,"subjectId" UUID,"policyVersion" INTEGER NOT NULL,"policyFingerprint" TEXT NOT NULL,"telemetryEpoch" UUID NOT NULL,"updatedAt" TIMESTAMP(3) NOT NULL)');
+   await tx.$executeRawUnsafe('CREATE TABLE "PolicyEvent" ("id" BIGSERIAL PRIMARY KEY,"minecraftUuid" UUID NOT NULL,"policyVersion" INTEGER NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+   await tx.$executeRawUnsafe('CREATE TABLE "Subject" ("id" UUID PRIMARY KEY,"scopeRestricted" BOOLEAN NOT NULL,"scopeLimit" TEXT[] NOT NULL,"accessSuspended" BOOLEAN NOT NULL,"allowedServerIds" TEXT[] NOT NULL)');
+   await tx.$executeRawUnsafe('CREATE TABLE "ActivityTotal" ("serverId" TEXT NOT NULL,"epoch" UUID NOT NULL,"playSeconds" BIGINT NOT NULL)');
+   for(const [id,mode] of [['club',hasLegacy?'roster':'members'],['chosen','selected'],['campus','university']])await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label","enabled","statisticsEnabled","accessMode","discordRequirement","allowedSubjectIds","updatedAt") VALUES ($1,$1,$1,true,false,$2,$3,ARRAY[$4::UUID],\'2026-01-01\')',id,mode,mode==='university'?'linked':'any',owner);
+   await tx.$executeRawUnsafe('INSERT INTO "MinecraftIdentity" VALUES ($1::UUID,$2::UUID,7,\'fingerprint\',$3::UUID,\'2026-01-01\'),($4::UUID,NULL,3,\'unlinked\',$3::UUID,\'2026-01-01\')',uuid,owner,epoch,unlinked);
+   await tx.$executeRawUnsafe('INSERT INTO "Subject" VALUES ($1::UUID,true,ARRAY[\'club\'],true,ARRAY[]::TEXT[])',owner);
+   await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES (\'club\',$1::UUID,123)',epoch);
+   const before=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"'),subjectBefore=await tx.$queryRawUnsafe('SELECT * FROM "Subject"'),historyBefore=await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"');
+   for(const statement of statements)await tx.$executeRawUnsafe(statement);
+   const rows=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');
+   for(let i=0;i<rows.length;i++){const {accessMode,updatedAt,...same}=rows[i],{accessMode:oldMode,updatedAt:oldRevision,...original}=before[i];assert.deepEqual(same,original);assert.equal(accessMode,oldMode==='roster'?'members':oldMode);if(oldMode==='roster')assert.ok(updatedAt>oldRevision);else assert.deepEqual(updatedAt,oldRevision);}
+   const identities=await tx.$queryRawUnsafe('SELECT * FROM "MinecraftIdentity"'),linked=identities.find(row=>row.uuid===uuid),anonymous=identities.find(row=>row.uuid===unlinked);
+   assert.equal(linked.policyVersion,hasLegacy?8:7);assert.equal(linked.policyFingerprint,hasLegacy?'':'fingerprint');assert.equal(linked.telemetryEpoch,epoch);assert.equal(anonymous.policyVersion,3);assert.equal(anonymous.telemetryEpoch,epoch);
+   const events=await tx.$queryRawUnsafe('SELECT "minecraftUuid","policyVersion" FROM "PolicyEvent"');assert.deepEqual(events,hasLegacy?[{minecraftUuid:uuid,policyVersion:8}]:[]);
+   assert.deepEqual(await tx.$queryRawUnsafe('SELECT * FROM "Subject"'),subjectBefore);assert.deepEqual(await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"'),historyBefore);
+   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label","accessMode") VALUES (\'old_insert\',\'old_insert\',\'Old API\',\'roster\')');
+   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label") VALUES (\'default_insert\',\'default_insert\',\'Default\')');
+   await tx.$executeRawUnsafe('UPDATE "ServerRecord" SET "accessMode"=\'roster\' WHERE "id"=\'old_insert\'');
+   assert.deepEqual((await tx.$queryRawUnsafe('SELECT "accessMode" FROM "ServerRecord" WHERE "id" IN (\'old_insert\',\'default_insert\')')).map(row=>row.accessMode),['members','members']);
+   const constraint=(await tx.$queryRawUnsafe('SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid=\'"ServerRecord"\'::regclass AND conname=\'ServerRecord_accessMode_check\''))[0].definition;assert.ok(!constraint.includes('roster'));assert.ok(constraint.includes('members'));
+   await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+  },{timeout:30000});
  }
 });

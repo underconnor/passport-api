@@ -183,7 +183,7 @@ model ServerRecord {
   label String
   sensitive Boolean @default(false)
   enabled Boolean @default(false)
-  accessMode String @default("roster")
+  accessMode String @default("members")
   discordRequirement String @default("any")
   statisticsEnabled Boolean @default(true)
   allowedSubjectIds String[] @default([]) @db.Uuid

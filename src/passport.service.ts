@@ -287,7 +287,7 @@ export class PassportService {
         if (identity.policyFingerprint) await tx.policyEvent.create({ data: { minecraftUuid: uuid, policyVersion } });
       }
       const expires = status === 'active' ? Math.min(now.getTime() + 60000,
-        allowedServers.some(server => server.accessMode === 'roster' || server.accessMode === 'members') || display.member || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
+        allowedServers.some(server => server.accessMode === 'members') || display.member || display.roleLabel ? subject!.verifiedUntil.getTime() : Infinity,
         subject!.identityProvider === 'usaint' ? subject!.universityVerifiedUntil!.getTime() : Infinity) : now.getTime() + 60000;
       return { contractVersion: '0.1.0-draft', subjectId: subject?.id ?? null, minecraftUuid: uuid, status, allowedServerIds, allowedServers: serverChoices, display, administrator, telemetry, policyVersion, issuedAt: now.toISOString(), expiresAt: new Date(administrator ? Math.min(expires, subject!.universityVerifiedUntil!.getTime()) : expires).toISOString() };
     });

@@ -77,7 +77,7 @@ const {serverCommandNameSchema,serverSettingsSchema}=require('../dist/security')
 test('server command names normalize NFC and ASCII case without trimming or changing display labels',()=>{
  for(const [input,expected] of [['Lobby','lobby'],['PLAY_2-야생','play_2-야생'],['로비','로비'],['가'.repeat(64),'가'.repeat(64)],['1','1']])assert.equal(serverCommandNameSchema.parse(input),expected);
  for(const input of ['',null,1,'가'.repeat(65),'a'.repeat(65),' lobby','lobby ','two words','/lobby','lobby/creative','a\nb','a\tb','a:b','a.b','ㄱ','ᄀ','Ａ','😀'])assert.equal(serverCommandNameSchema.safeParse(input).success,false,JSON.stringify(input));
- const original={label:'로비 표시 이름',sensitive:false,enabled:true,accessMode:'roster',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-02T00:00:00.000Z'};
+ const original={label:'로비 표시 이름',sensitive:false,enabled:true,accessMode:'members',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-02T00:00:00.000Z'};
  assert.equal(serverSettingsSchema.parse(original).commandName,undefined);
  const parsed=serverSettingsSchema.parse({...original,commandName:'CAMPUS-로비'});assert.equal(parsed.commandName,'campus-로비');assert.equal(parsed.label,original.label);
  assert.equal(serverSettingsSchema.safeParse({...original,id:'cannot-change'}).success,false);
@@ -93,10 +93,10 @@ test('university Discord requirements use only an explicit identity relation and
  for(const change of [{accessSuspended:true},{membershipStatus:'suspended'},{universityVerifiedUntil:now},{identityProvider:'development'}])assert.deepEqual(ids({...base,...change}),[]);
  assert.deepEqual(ids({...base,scopeRestricted:true,scopeLimit:['linked']}),[]);
  assert.deepEqual(ids({...base,scopeRestricted:true,scopeLimit:['any']}),['any']);
- const member={...base,membershipStatus:'active',verifiedUntil:future},memberServers=['roster','members','selected'].map(accessMode=>({id:accessMode,accessMode,enabled:true,discordRequirement:'linked',allowedSubjectIds:['subject']}));
- assert.deepEqual(permittedServers(member,memberServers,{now}).map(row=>row.id),['roster','members','selected']);
+ const member={...base,membershipStatus:'active',verifiedUntil:future},memberServers=['members','selected'].map(accessMode=>({id:accessMode,accessMode,enabled:true,discordRequirement:'linked',allowedSubjectIds:['subject']}));
+ assert.deepEqual(permittedServers(member,memberServers,{now}).map(row=>row.id),['members','selected']);
  assert.deepEqual(permittedServers(base,memberServers,{now}).map(row=>row.id),['selected']);
- assert.deepEqual(permittedServers({...base,identityProvider:'development'},[memberServers[2]],{now,allowDevelopment:true}),[]);
+ assert.deepEqual(permittedServers({...base,identityProvider:'development'},[memberServers[1]],{now,allowDevelopment:true}),[]);
  assert.deepEqual(permittedServers(base,[{...servers[0],discordRequirement:'unknown'}],{now}),[]);
 });
 test('Discord server settings accept only the optional enum and member ID resolution is bounded and normalized',()=>{
@@ -108,4 +108,15 @@ test('Discord server settings accept only the optional enum and member ID resolu
  const ids=Array.from({length:50},()=>randomUUID());assert.deepEqual(memberQuerySchema.parse({ids:ids.join(',')}).ids,ids);
  assert.deepEqual(memberQuerySchema.parse({ids:ids[0].toUpperCase()}).ids,[ids[0]]);assert.equal(memberQuerySchema.parse({}).ids,undefined);
  for(const value of ['',[],ids[0]+',',','+ids[0],ids[0]+', '+ids[1],ids[0]+','+ids[0].toUpperCase(),ids.join(',')+','+randomUUID(),'invalid'])assert.equal(memberQuerySchema.safeParse({ids:value}).success,false,JSON.stringify(value));
+});
+
+test('members mode ignores legacy roster server lists and public settings reject the retired roster mode',()=>{
+ const {permittedServers}=require('../dist/registry'),now=new Date('2026-10-03T00:00:00Z');
+ const subject={id:'member',identityProvider:'usaint',universityVerifiedUntil:new Date(now.getTime()+60000),membershipStatus:'active',verifiedUntil:new Date(now.getTime()+60000),accessSuspended:false,scopeRestricted:false,scopeLimit:[],discordIdentity:null};
+ const servers=[{id:'club',enabled:true,accessMode:'members'},{id:'retired',enabled:true,accessMode:'roster'},{id:'disabled',enabled:false,accessMode:'members'}];
+ for(const allowedServerIds of [[],['elsewhere'],['club'],undefined])assert.deepEqual(permittedServers({...subject,allowedServerIds},servers,{now}).map(row=>row.id),['club']);
+ for(const changes of [{scopeRestricted:true,scopeLimit:[]},{membershipStatus:'inactive'},{verifiedUntil:now},{universityVerifiedUntil:now},{accessSuspended:true}])assert.deepEqual(permittedServers({...subject,...changes},servers,{now}),[]);
+ const original={label:'회원 서버',sensitive:false,enabled:true,accessMode:'members',allowedSubjectIds:[],expectedUpdatedAt:'2026-10-03T00:00:00.000Z'};
+ for(const accessMode of ['members','selected','university'])assert.equal(serverSettingsSchema.safeParse({...original,accessMode}).success,true);
+ assert.equal(serverSettingsSchema.safeParse({...original,accessMode:'roster'}).success,false);
 });

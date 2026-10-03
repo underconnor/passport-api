@@ -86,7 +86,7 @@ UUID는 하이픈이 있는 36자 문자열, Minecraft name은 영숫자/밑줄 
 
 이벤트는 정책 변경 알림이며 허가 증거가 아닙니다. `reset=true`이면 접속자를 다시 조회하고, 보존한 UUID 버전보다 낮은 정책은 거절합니다. DB 복원으로 버전이 내려가면 운영자가 버전을 복구해야 합니다.
 
-DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `accessMode`는 `roster|members|selected|university`입니다. university와 selected는 비회원의 유효한 학교 인증을 허용하며(selected는 명시한 ID만), 모든 모드에서 전체 정지·개인 서버 제한은 유지합니다. 새 발견은 비활성 roster와 discordRequirement=any로 시작하며 기존 서버의 설정은 그대로 보존합니다. university 서버의 discordRequirement=any|linked|unlinked는 실제 DiscordIdentity 연결만 판정하며 selected 등 다른 모드에서는 any로 정규화합니다. `admin/overview.servers`는 관리자에게 비활성 서버도 이름을 확인할 수 있도록 `{id,label,commandName,sensitive,enabled}` 전체 목록을 제공합니다.
+DB에 보관하는 발견·활성화·접근 범위와 동시 편집 규칙은 [서버 등록 문서](server-registry.md)를 참조합니다. `accessMode`는 `members|selected|university`입니다. university와 selected는 비회원의 유효한 학교 인증을 허용하며(selected는 명시한 ID만), 모든 모드에서 전체 정지·개인 서버 제한은 유지합니다. 새 발견은 비활성 members와 discordRequirement=any로 시작합니다. 기존 roster 서버만 migration에서 members로 전환하고 다른 설정은 보존합니다. 명부의 서버 ID 배열은 접근 허가에 사용하지 않으며 시트는 현재 소모임 회원 여부와 freshness를 판별합니다. 공개 PUT roster 값은400입니다. university 서버의 discordRequirement=any|linked|unlinked는 실제 DiscordIdentity 연결만 판정하며 selected 등 다른 모드에서는 any로 정규화합니다. `admin/overview.servers`는 관리자에게 비활성 서버도 이름을 확인할 수 있도록 `{id,label,commandName,sensitive,enabled}` 전체 목록을 제공합니다.
 
 이벤트를 생성할 수 있는 정책 트랜잭션은 `policyTransaction`을 사용합니다. 트랜잭션의 첫 SQL에서 공통 PostgreSQL advisory transaction lock을 획득해 ID 발급과 커밋 순서가 어긋나지 않도록 합니다. 웹·게임 연결 완료, 정책 조회 중 변경 감지, 관리자 접근 제한·연결 해제, 명부 반영, 학교 로그인 완료에 적용합니다. 학교 재로그인 시 기존 Minecraft 연결이 있으면 갱신된 학교 유효기간·이름·명부 정보를 소비자가 다시 읽도록 정책 버전과 이벤트를 함께 갱신합니다. 미연결 첫 로그인은 이벤트를 만들지 않습니다. 일반 인증 준비·MFA·읽기 트랜잭션에는 적용하지 않습니다. 잠금은 커밋·롤백 시 자동 해제됩니다. 앞으로 이벤트 생산 경로를 추가할 때도 같은 wrapper를 사용해야 합니다.
 

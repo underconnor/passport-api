@@ -1,8 +1,8 @@
 # 서버 발견과 접근 설정
 
-`ServerRecord`는 학교 사용자에게 허용할 서버와 화면 이름, 이동 명령 이름, 운영 상태를 PostgreSQL에 보관한다. 첫 초기화 때만 `SERVER_REGISTRY_JSON`의 서버를 `enabled=true`, `accessMode=roster`, `commandName=id`로 복사한다. 레코드가 이미 있으면 앱 재시작이나 환경 변수 변경으로 관리자 설정을 덮어쓰지 않는다. 기존 명부의 네 서버 범위도 자동으로 확대하지 않는다. 학교 전체 모드는 관리자가 개별 서버에 명시적으로 설정할 때만 적용하며, 기능 배포만으로 서버를 만들거나 기존 접근 모드를 변경하지 않는다.
+`ServerRecord`는 학교 사용자에게 허용할 서버와 화면 이름, 이동 명령 이름, 운영 상태를 PostgreSQL에 보관한다. 첫 초기화 때만 `SERVER_REGISTRY_JSON`의 서버를 `enabled=true`, `accessMode=members`, `commandName=id`로 복사한다. 레코드가 이미 있으면 앱 재시작이나 환경 변수 변경으로 관리자 설정을 덮어쓰지 않는다. 활성 소모임 회원 여부는 시트 동기화 결과를 사용하며 명부에 저장된 서버 ID 목록은 접근 허용 여부를 결정하지 않는다. 학교 전체·선택한 회원 모드는 관리자가 개별 서버에 설정한다. 아래 3모드 전환 migration은 기존 roster 서버만 members로 바꾸며 서버를 새로 만들지 않는다.
 
-Velocity와 Paper는 서비스 Bearer 인증으로 `POST /v1/minecraft/servers/heartbeat`에 `{source:"velocity"|"paper",servers:[{id,label}]}`를 보낸다. 요청당 최대64개이며 ID 중복과 제어문자 label을 거절한다. 새 서버는 `enabled=false`, `accessMode=roster`, `commandName=id`로 발견한다. 새 ID가 다른 서버의 이동 명령 이름과 충돌하면 전체 heartbeat를409 `server_command_conflict`로 거절한다. 기존 서버는 해당 source의 seen 시각만 갱신하고 표시명·명령 이름·권한·설정 버전은 바꾸지 않는다. 전체 등록 수64개를 초과하면 한 트랜잭션 전체가409 `registry_full`로 실패한다. 응답은 `{received,registered}`이며 입장 허가를 뜻하지 않는다.
+Velocity와 Paper는 서비스 Bearer 인증으로 `POST /v1/minecraft/servers/heartbeat`에 `{source:"velocity"|"paper",servers:[{id,label}]}`를 보낸다. 요청당 최대64개이며 ID 중복과 제어문자 label을 거절한다. 새 서버는 `enabled=false`, `accessMode=members`, `commandName=id`로 발견한다. 새 ID가 다른 서버의 이동 명령 이름과 충돌하면 전체 heartbeat를409 `server_command_conflict`로 거절한다. 기존 서버는 해당 source의 seen 시각만 갱신하고 표시명·명령 이름·권한·설정 버전은 바꾸지 않는다. 전체 등록 수64개를 초과하면 한 트랜잭션 전체가409 `registry_full`로 실패한다. 응답은 `{received,registered}`이며 입장 허가를 뜻하지 않는다.
 
 `GET /v1/admin/servers`는 모든 등록 서버를 반환한다. `online`은 Paper heartbeat가90초 이내인지, `proxyAvailable`은 Velocity heartbeat가90초 이내인지를 각각 표시한다. heartbeat는 프로세스의 발견 신호이며 실클라이언트 접속 성공을 보증하지 않는다. 실제 게임 목적지 주소는 Velocity 운영 설정에 계속 존재해야 한다.
 
@@ -10,12 +10,11 @@ Velocity와 Paper는 서비스 Bearer 인증으로 `POST /v1/minecraft/servers/h
 
 | accessMode | 기본 허용 범위 |
 |---|---|
-| roster | 명부가 해당 서버를 허용한 회원 |
 | members | 모든 활성 소모임 회원 |
 | selected | `allowedSubjectIds`에 명시한 유효한 학교 인증 사용자. 소모임 비회원도 포함 |
 | university | 유효한 u-SAINT 인증 사용자 전체. 소모임 비회원과 명부 만료 사용자도 포함 |
 
-선택 ID는 기존 학교 사용자여야 한다. 모든 모드는 유효한 학교 인증과 활성 서버를 요구하며 `accessSuspended` 또는 회원 상태 `suspended`이면 차단한다. `roster`, `members`는 활성 소모임 회원과 유효한 명부를 계속 요구한다. `selected`, `university`는 명부 자격을 요구하지 않는다. 선택한 회원도 학교 인증이 만료되면 접근할 수 없다. 기본 범위를 계산한 뒤 개인 서버 범위 제한을 적용하며 UUID 정책과 사용자 서버 목록에 같은 함수를 사용한다. 개발용 가상 신원은 명시적인 비운영 개발 인증 모드의 기존 회원 정책에만 사용할 수 있고 `selected`와 `university`에는 사용할 수 없다.
+선택 ID는 기존 학교 사용자여야 한다. 모든 모드는 유효한 학교 인증과 활성 서버를 요구하며 `accessSuspended` 또는 회원 상태 `suspended`이면 차단한다. `members`는 활성 소모임 회원과 유효한 명부를 계속 요구한다. `selected`, `university`는 명부 자격을 요구하지 않는다. 선택한 회원도 학교 인증이 만료되면 접근할 수 없다. 기본 범위를 계산한 뒤 개인 서버 범위 제한을 적용하며 UUID 정책과 사용자 서버 목록에 같은 함수를 사용한다. 개발용 가상 신원은 명시적인 비운영 개발 인증 모드의 기존 회원 정책에만 사용할 수 있고 `selected`와 `university`에는 사용할 수 없다.
 
 관리자 회원 응답의 `eligibleServerIds`는 개인 `accessSuspended`·범위 제한을 적용하기 전의 유효한 기본 범위다. 명부가 만료되어도 학교 인증이 유효하면 `selected` 또는 `university` 서버만 남을 수 있다. 학교 인증 만료 또는 회원 상태 `suspended`이면 비어 있다. 이를 사용하므로 개인 정지 상태에서도 기존 범위를 검토하고 복구할 수 있다. 개인 제한 편집은 이 기본 범위를 확대할 수 없다.
 
@@ -50,3 +49,13 @@ Velocity와 Paper는 서비스 Bearer 인증으로 `POST /v1/minecraft/servers/h
 정책, 웹 허용 서버, 게임 연결 양쪽 확인, 관리자 기본 자격, 개인 통계 조회·수집·현재 접속 보고에 같은 판단을 사용한다. 실제 연동·해제 트랜잭션은 Minecraft 정책 버전과 outbox를 갱신하고 통계 epoch를 교체한다. 변경 전 epoch의 지연 전송은 무시하며 이미 저장된 통계는 보존한다. 관리자 서버의 Discord 조건이 실제 바뀔 때도 연결된 UUID의 epoch를 교체하므로 다른 서버의 아직 전송하지 않은 이전 epoch 배치가 함께 제외될 수 있다. 조건을 유지한 표시명 변경은 epoch를 바꾸지 않는다.
 
 `20261003010000_server_discord_requirement` migration은 기본값 `any`와 enum CHECK를 추가한다. 기존 행의 모드·선택 ID·설정 revision은 유지되고 구API의 열 생략 INSERT도 `any`가 된다. 다만 구API는 새 조건을 해석하지 않으므로 linked/unlinked 설정을 사용한 뒤에는 구API만 단독으로 되돌리면 안 된다. 같은 목적의 기존 학교·Discord 연동 정보를 이용하며 새 개인정보는 수집하지 않는다.
+
+## 명부 서버 범위 제거와 3모드 전환
+
+지원하는 접근 모드는 `members`, `selected`, `university` 세 가지다. 신규 공개 PUT은 `accessMode=roster`를400 `invalid_request`로 거절한다. 기존 화면의 편집 버전으로 `members`를 저장하면 낙관적 잠금이409 `server_changed`를 반환하므로 최신 서버를 다시 조회한다. `Subject.allowedServerIds`와 시트의 기존 `serverIds`는 동기화 호환 데이터로 남지만 게임 접근을 허용하거나 제한하지 않는다. 시트의 회원 상태·freshness와 사용자 개인 `scopeRestricted`/`scopeLimit`, 정지·학교 인증 만료는 계속 적용된다.
+
+API 교체 전 `20261003020000_members_server_access` migration을 실행한다. 명시적인 트랜잭션에서 정책 writer advisory lock을 가장 먼저 잡고, 기존 `roster` 행만 `members`로 바꾸며 해당 서버의 `updatedAt`을 최소1ms 증가시킨다. 변환 행이 있으면 연결된 Minecraft UUID의 정책 버전을 올리고 fingerprint를 비운 뒤 같은 트랜잭션에 outbox를 생성한다. 변환할 행이 없으면 정책 버전·이벤트를 건드리지 않는다. 선택 목록·Discord 조건·활성화·통계 설정·개인 제한은 그대로이며, 접근 범위가 동일하거나 확대되는 전환이므로 telemetry epoch와 통계 이력은 유지한다.
+
+DB 기본값은 `members`이며 CHECK에는 세 모드만 남긴다. 구API가 명시적으로 `roster`를 INSERT/UPDATE하는 경우에만 BEFORE 트리거가 `members`로 정규화하여 이전 값이 되살아나지 않도록 한다. 이 DB 호환은 새 HTTP 요청에서 roster를 허용한다는 뜻이 아니다. members를 지원하는 직전 API 이미지와의 교체·rollback은 가능하지만 Discord 조건을 지원하지 않는 더 오래된 이미지에 대한 앞 절의 rollback 제한은 여전하다.
+
+초기 설정 서버는 기존 bootstrap 방식대로 `enabled=true`, 자동 발견 서버는 `enabled=false`로 유지하면서 둘 다 `members`로 시작한다. 저장된 설정이 있으면 seed와 heartbeat는 모드·선택 회원·Discord 조건·통계 설정을 덮어쓰지 않는다. 전환 후 활성 회원은 별도의 명부 서버 ID가 없어도 활성 `members` 서버에 접근하며, 비회원은 명시적으로 선택된 서버나 조건을 충족하는 학교 전체 서버에만 접근한다.
