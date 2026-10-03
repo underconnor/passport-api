@@ -271,16 +271,16 @@ test('command-name migration backfills IDs atomically without changing labels, r
   await tx.$executeRawUnsafe('CREATE TABLE "ActivityTotal" ("serverId" TEXT NOT NULL,"playSeconds" BIGINT NOT NULL)');
   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" VALUES (\'lobby\',\'로비 표시\',ARRAY[]::UUID[],\'2026-01-01\'),(\'survival\',\'생존 표시\',ARRAY[]::UUID[],\'2026-01-02\')');
   await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES (\'lobby\',321)');
-  const before=await tx.$queryRawUnsafe('SELECT "id","label","allowedSubjectIds","updatedAt" FROM "ServerRecord" ORDER BY "id"');
+  const before=await tx.$queryRawUnsafe(`SELECT "id","label","allowedSubjectIds","updatedAt" FROM "${schema}"."ServerRecord" ORDER BY "id"`);
   // Keep PL/pgSQL's dollar-quoted trigger body intact when executing this migration in the isolated schema.
   let dollarQuoted=false,statement='';const statements=[];
   for(const token of sql.split(/(\$\$|;)/)){if(token==='$$')dollarQuoted=!dollarQuoted;if(token===';'&&!dollarQuoted){statements.push(statement.trim());statement='';}else statement+=token;}
   if(statement.trim())statements.push(statement.trim());
   for(const statement of statements.filter(value=>value&&!['BEGIN','COMMIT'].includes(value)))await tx.$executeRawUnsafe(statement);
-  const rows=await tx.$queryRawUnsafe('SELECT "id","label","allowedSubjectIds","updatedAt","commandName" FROM "ServerRecord" ORDER BY "id"');assert.deepEqual(rows.map(({commandName,...row})=>row),before);assert.deepEqual(rows.map(row=>row.commandName),['lobby','survival']);
-  assert.equal((await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"'))[0].playSeconds,321n);
+  const rows=await tx.$queryRawUnsafe(`SELECT "id","label","allowedSubjectIds","updatedAt","commandName" FROM "${schema}"."ServerRecord" ORDER BY "id"`);assert.deepEqual(rows.map(({commandName,...row})=>row),before);assert.deepEqual(rows.map(row=>row.commandName),['lobby','survival']);
+  assert.equal((await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ActivityTotal"`))[0].playSeconds,321n);
   await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","label","updatedAt") VALUES (\'legacy_insert\',\'Old API insert\',CURRENT_TIMESTAMP)');
-  const legacy=(await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" WHERE "id"=\'legacy_insert\''))[0];assert.equal(legacy.commandName,'legacy_insert');assert.equal(legacy.label,'Old API insert');
+  const legacy=(await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ServerRecord" WHERE "id"='legacy_insert'`))[0];assert.equal(legacy.commandName,'legacy_insert');assert.equal(legacy.label,'Old API insert');
   const column=(await tx.$queryRawUnsafe('SELECT "is_nullable" FROM information_schema.columns WHERE table_schema=$1 AND table_name=\'ServerRecord\' AND column_name=\'commandName\'',schema))[0];assert.equal(column.is_nullable,'NO');
   await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
  },{timeout:30000});
@@ -471,19 +471,20 @@ test('members migration preserves selected settings, subject overrides, telemetr
    await tx.$executeRawUnsafe('INSERT INTO "MinecraftIdentity" VALUES ($1::UUID,$2::UUID,7,\'fingerprint\',$3::UUID,\'2026-01-01\'),($4::UUID,NULL,3,\'unlinked\',$3::UUID,\'2026-01-01\')',uuid,owner,epoch,unlinked);
    await tx.$executeRawUnsafe('INSERT INTO "Subject" VALUES ($1::UUID,true,ARRAY[\'club\'],true,ARRAY[]::TEXT[])',owner);
    await tx.$executeRawUnsafe('INSERT INTO "ActivityTotal" VALUES (\'club\',$1::UUID,123)',epoch);
-   const before=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"'),subjectBefore=await tx.$queryRawUnsafe('SELECT * FROM "Subject"'),historyBefore=await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"');
+   // Qualify each fixture schema so prepared reads cannot inherit another fixture table shape.
+   const before=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ServerRecord" ORDER BY "id"`),subjectBefore=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."Subject"`),historyBefore=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ActivityTotal"`);
    for(const statement of statements)await tx.$executeRawUnsafe(statement);
-   const rows=await tx.$queryRawUnsafe('SELECT * FROM "ServerRecord" ORDER BY "id"');
+   const rows=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ServerRecord" ORDER BY "id"`);
    for(let i=0;i<rows.length;i++){const {accessMode,updatedAt,...same}=rows[i],{accessMode:oldMode,updatedAt:oldRevision,...original}=before[i];assert.deepEqual(same,original);assert.equal(accessMode,oldMode==='roster'?'members':oldMode);if(oldMode==='roster')assert.ok(updatedAt>oldRevision);else assert.deepEqual(updatedAt,oldRevision);}
-   const identities=await tx.$queryRawUnsafe('SELECT * FROM "MinecraftIdentity"'),linked=identities.find(row=>row.uuid===uuid),anonymous=identities.find(row=>row.uuid===unlinked);
+   const identities=await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."MinecraftIdentity"`),linked=identities.find(row=>row.uuid===uuid),anonymous=identities.find(row=>row.uuid===unlinked);
    assert.equal(linked.policyVersion,hasLegacy?8:7);assert.equal(linked.policyFingerprint,hasLegacy?'':'fingerprint');assert.equal(linked.telemetryEpoch,epoch);assert.equal(anonymous.policyVersion,3);assert.equal(anonymous.telemetryEpoch,epoch);
-   const events=await tx.$queryRawUnsafe('SELECT "minecraftUuid","policyVersion" FROM "PolicyEvent"');assert.deepEqual(events,hasLegacy?[{minecraftUuid:uuid,policyVersion:8}]:[]);
-   assert.deepEqual(await tx.$queryRawUnsafe('SELECT * FROM "Subject"'),subjectBefore);assert.deepEqual(await tx.$queryRawUnsafe('SELECT * FROM "ActivityTotal"'),historyBefore);
+   const events=await tx.$queryRawUnsafe(`SELECT "minecraftUuid","policyVersion" FROM "${schema}"."PolicyEvent"`);assert.deepEqual(events,hasLegacy?[{minecraftUuid:uuid,policyVersion:8}]:[]);
+   assert.deepEqual(await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."Subject"`),subjectBefore);assert.deepEqual(await tx.$queryRawUnsafe(`SELECT * FROM "${schema}"."ActivityTotal"`),historyBefore);
    await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label","accessMode") VALUES (\'old_insert\',\'old_insert\',\'Old API\',\'roster\')');
    await tx.$executeRawUnsafe('INSERT INTO "ServerRecord" ("id","commandName","label") VALUES (\'default_insert\',\'default_insert\',\'Default\')');
    await tx.$executeRawUnsafe('UPDATE "ServerRecord" SET "accessMode"=\'roster\' WHERE "id"=\'old_insert\'');
-   assert.deepEqual((await tx.$queryRawUnsafe('SELECT "accessMode" FROM "ServerRecord" WHERE "id" IN (\'old_insert\',\'default_insert\')')).map(row=>row.accessMode),['members','members']);
-   const constraint=(await tx.$queryRawUnsafe('SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid=\'"ServerRecord"\'::regclass AND conname=\'ServerRecord_accessMode_check\''))[0].definition;assert.ok(!constraint.includes('roster'));assert.ok(constraint.includes('members'));
+   assert.deepEqual((await tx.$queryRawUnsafe(`SELECT "accessMode" FROM "${schema}"."ServerRecord" WHERE "id" IN ('old_insert','default_insert')`)).map(row=>row.accessMode),['members','members']);
+   const constraint=(await tx.$queryRawUnsafe('SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid=$1::regclass AND conname=\'ServerRecord_accessMode_check\'',`"${schema}"."ServerRecord"`))[0].definition;assert.ok(!constraint.includes('roster'));assert.ok(constraint.includes('members'));
    await tx.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
   },{timeout:30000});
  }
